@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhysiN — rigid bodies in 3 and 4 dimensions</title>
+<style>
+  :root{
+    --paper:#EDEFEA; --ink:#14201C; --rule:#C6CDC5; --dim:#6B7A73;
+    --signal:#7A1F3D; --cool:#2C6B6B;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--paper);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #stage{position:absolute;inset:0}
+  #stage canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+  #stage canvas:active{cursor:grabbing}
+
+  #hud{position:absolute;top:0;left:0;padding:16px 18px;pointer-events:none;max-width:33ch}
+  h1{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.24em;
+     text-transform:uppercase;margin:0 0 6px}
+  h1 em{font-style:normal;color:var(--signal)}
+  .note{font-family:var(--mono);font-size:10.5px;line-height:1.65;letter-spacing:.03em;
+     margin:0;color:var(--dim)}
+
+  #panel{position:absolute;right:16px;top:16px;display:flex;flex-direction:column;
+    gap:6px;width:206px}
+  .seg{display:flex;gap:0}
+  .seg button{flex:1;text-align:center}
+  .seg button:first-child{border-right-width:0}
+  button{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;
+    background:rgba(237,239,234,.72);color:var(--ink);border:1px solid var(--rule);
+    padding:9px 11px;cursor:pointer;text-align:left;border-radius:0}
+  button:hover{border-color:var(--signal);color:var(--signal)}
+  button:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  button[aria-pressed="true"]{border-color:var(--signal);color:var(--signal);
+    background:rgba(122,31,61,.07)}
+
+  #stat{position:absolute;right:16px;bottom:120px;font-family:var(--mono);font-size:10.5px;
+    color:var(--dim);letter-spacing:.04em;text-align:right;white-space:pre;line-height:1.6}
+
+  /* the w ruler */
+  #ruler{position:absolute;left:0;right:0;bottom:0;height:92px;touch-action:none;
+    cursor:ew-resize;
+    background:linear-gradient(to top, rgba(237,239,234,.99), rgba(237,239,234,.55));
+    border-top:1px solid var(--rule)}
+  #rulerCanvas{width:100%;height:92px;display:block}
+  #wlabel{position:absolute;bottom:66px;font-family:var(--mono);font-size:11px;
+    letter-spacing:.07em;color:var(--signal);transform:translateX(-50%);pointer-events:none}
+  #fallback{position:absolute;inset:0;display:none;place-items:center;padding:32px;
+    font-family:var(--mono);font-size:12px;color:var(--dim);text-align:center}
+  @media (max-width:640px){
+    #panel{width:150px}
+    #hud{max-width:24ch}
+    #stat{bottom:104px}
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="hud">
+  <h1>PhysiN <em>&middot;</em> rigid bodies in n dimensions</h1>
+  <p class="note" id="note4">Each body is a solid in four dimensions. You cannot
+    see a 4D solid. Thus the page cuts it with one 3D hyperplane. Drag the ruler
+    at the bottom to move that hyperplane along the fourth axis, w. A band shows
+    the interval of w that each body covers. The band has color when the
+    hyperplane cuts that body.</p>
+  <p class="note" id="note3" style="display:none">This is the same library, with
+    the dimension count set to three. The rotor becomes a quaternion and the
+    angular velocity bivector becomes the usual axial vector. Thus you get a
+    usual 3D engine as a special case.</p>
+</div>
+
+<div id="panel">
+  <div class="seg">
+    <button id="dim3" aria-pressed="false">n = 3</button>
+    <button id="dim4" aria-pressed="true">n = 4</button>
+  </div>
+  <button id="drop">Drop a tesseract</button>
+  <button id="dropBall">Drop a hypersphere</button>
+  <button id="spin">Torque in the (x w) plane</button>
+  <button id="tilt" aria-pressed="false">Tilt gravity into w</button>
+  <button id="pause" aria-pressed="false">Pause</button>
+  <button id="reset">Reset</button>
+</div>
+
+<div id="stat"></div>
+<div id="ruler"><canvas id="rulerCanvas"></canvas></div>
+<div id="wlabel"></div>
+<div id="fallback">This page needs WebGL and three.js. The browser did not load them.</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(()=>{var $e=Object.defineProperty;var Y=(o,t)=>{for(var n in t)$e(o,n,{get:t[n],enumerable:!0})};var Kt={};Y(Kt,{Body:()=>j,ConvexMesh:()=>Wt,HalfSpace:()=>qt,HyperBox:()=>Vt,HyperSphere:()=>jt,Torus:()=>Gt,World:()=>X,ballVolume:()=>Lt,boxBoxAxis:()=>$t,boxVertices:()=>D,buildContactGraph:()=>Yt,collide:()=>ut,commutator:()=>Rt,commutatorMatrix:()=>it,contractVecBi:()=>oo,defaultParams:()=>Ut,dims:()=>R,hyperBoxInertia:()=>Me,hyperBoxMesh:()=>lt,hyperSphereInertia:()=>Ae,inertiaFromCovariance:()=>K,integratePositions:()=>pt,integrateVelocities:()=>ht,linalg:()=>vt,massProperties:()=>Q,mv:()=>St,prepareContact:()=>yt,rotor:()=>Ct,shockPropagation:()=>Jt,solveContact:()=>et,starMatrix:()=>U,tangentBasis:()=>ft,torusCovariance:()=>Fe,torusInertia:()=>Se,torusMesh:()=>at,torusVolume:()=>be,warmStart:()=>Xt,wedgeVec:()=>Bt});var gt=new Map;function he(o){let t=0;for(;o!==0;)o&=o-1,t+=1;return t}function rt(o){let t=1;for(let n=2;n<=o;n+=1)t*=n;return t}function R(o){if(!Number.isInteger(o)||o<2)throw new Error("dims: n must be an integer of 2 or more");if(gt.has(o))return gt.get(o);let t=1<<o,n=new Int8Array(t),r=new Int8Array(t);for(let v=0;v<t;v+=1){let A=he(v);n[v]=A,r[v]=A*(A-1)/2&1?-1:1}let e=new Int32Array(t*t),i=new Int8Array(t*t);for(let v=0;v<t;v+=1)for(let A=0;A<t;A+=1){let b=v>>1,F=0;for(;b!==0;)F+=he(b&A),b>>=1;e[v*t+A]=v^A,i[v*t+A]=F&1?-1:1}let s=new Int32Array(o);for(let v=0;v<o;v+=1)s[v]=1<<v;let l=[],c=[],f=new Int32Array(t).fill(-1);for(let v=0;v<o;v+=1)for(let A=v+1;A<o;A+=1)f[1<<v|1<<A]=l.length,l.push([v,A]),c.push(1<<v|1<<A);let u=l.length,y=[],x=new Int32Array(t).fill(-1);for(let v=0;v<t;v+=1)(n[v]&1)===0&&(x[v]=y.length,y.push(v));let m=y.length,h=new Int32Array(m*m),a=new Int8Array(m*m);for(let v=0;v<m;v+=1)for(let A=0;A<m;A+=1){let b=y[v]*t+y[A];h[v*m+A]=x[e[b]],a[v*m+A]=i[b]}let p=x[0],w=new Int32Array(u);for(let v=0;v<u;v+=1)w[v]=x[c[v]];let g=new Float64Array(u*u*u);for(let v=0;v<u;v+=1)for(let A=0;A<u;A+=1){let b=c[v]*t+c[A],F=c[A]*t+c[v];if(e[b]===e[F]){let S=f[e[b]];S>=0&&(g[(v*u+A)*u+S]+=(i[b]-i[F])/2)}}let d=[];for(let v=0;v<o;v+=1){let A=new Float64Array(u*o);for(let b=0;b<u;b+=1){let[F,S]=l[b];F===v&&(A[b*o+S]+=1),S===v&&(A[b*o+F]-=1)}d.push(A)}let M={n:o,k:u,r:m,N:t,grade:n,reverseSign:r,gpBlade:e,gpSign:i,vecBlade:s,pairs:l,biBlade:c,biOfBlade:f,evenBlade:y,slotOfBlade:x,evenGpSlot:h,evenGpSign:a,scalarSlot:p,biSlot:w,comm:g,eStar:d,cXX:2/rt(o+2),cXY:1/rt(o+2),simplexVolumeDiv:rt(o),simplexMomentDiv:rt(o+1)};return gt.set(o,M),M}var vt={};Y(vt,{jacobiEigen:()=>Ze,matDet:()=>H,matIdentity:()=>wt,matInverse:()=>$,matInverseSPD:()=>xt,matMul:()=>O,matMulT:()=>nt,matTVec:()=>G,matTranspose:()=>ze,matVec:()=>T,matZero:()=>I});function I(o,t){return new Float64Array(o*t)}function wt(o,t){let n=t||I(o,o);n.fill(0);for(let r=0;r<o;r+=1)n[r*o+r]=1;return n}function O(o,t,n,r,e,i){let s=i||I(n,e);s.fill(0);for(let l=0;l<n;l+=1)for(let c=0;c<r;c+=1){let f=o[l*r+c];if(f!==0)for(let u=0;u<e;u+=1)s[l*e+u]+=f*t[c*e+u]}return s}function nt(o,t,n,r,e,i){let s=i||I(n,e);s.fill(0);for(let l=0;l<n;l+=1)for(let c=0;c<e;c+=1){let f=0;for(let u=0;u<r;u+=1)f+=o[l*r+u]*t[c*r+u];s[l*e+c]=f}return s}function T(o,t,n,r,e){let i=e||new Float64Array(n);for(let s=0;s<n;s+=1){let l=0;for(let c=0;c<r;c+=1)l+=o[s*r+c]*t[c];i[s]=l}return i}function G(o,t,n,r,e){let i=e||new Float64Array(r);i.fill(0);for(let s=0;s<n;s+=1){let l=t[s];if(l!==0)for(let c=0;c<r;c+=1)i[c]+=o[s*r+c]*l}return i}function ze(o,t,n,r){let e=r||I(n,t);for(let i=0;i<t;i+=1)for(let s=0;s<n;s+=1)e[s*t+i]=o[i*n+s];return e}function H(o,t){let n=Float64Array.from(o),r=1;for(let e=0;e<t;e+=1){let i=e,s=Math.abs(n[e*t+e]);for(let c=e+1;c<t;c+=1){let f=Math.abs(n[c*t+e]);f>s&&(s=f,i=c)}if(s===0)return 0;if(i!==e){for(let c=0;c<t;c+=1){let f=n[e*t+c];n[e*t+c]=n[i*t+c],n[i*t+c]=f}r=-r}let l=n[e*t+e];r*=l;for(let c=e+1;c<t;c+=1){let f=n[c*t+e]/l;if(f!==0)for(let u=e;u<t;u+=1)n[c*t+u]-=f*n[e*t+u]}}return r}function $(o,t,n){let r=Float64Array.from(o),e=wt(t,n);for(let i=0;i<t;i+=1){let s=i,l=Math.abs(r[i*t+i]);for(let f=i+1;f<t;f+=1){let u=Math.abs(r[f*t+i]);u>l&&(l=u,s=f)}if(l<1e-300)throw new Error("matInverse: the matrix is singular");if(s!==i)for(let f=0;f<t;f+=1){let u=r[i*t+f];r[i*t+f]=r[s*t+f],r[s*t+f]=u,u=e[i*t+f],e[i*t+f]=e[s*t+f],e[s*t+f]=u}let c=r[i*t+i];for(let f=0;f<t;f+=1)r[i*t+f]/=c,e[i*t+f]/=c;for(let f=0;f<t;f+=1){if(f===i)continue;let u=r[f*t+i];if(u!==0)for(let y=0;y<t;y+=1)r[f*t+y]-=u*r[i*t+y],e[f*t+y]-=u*e[i*t+y]}}return e}function xt(o,t,n){let r=I(t,t);for(let s=0;s<t;s+=1)for(let l=0;l<=s;l+=1){let c=o[s*t+l];for(let f=0;f<l;f+=1)c-=r[s*t+f]*r[l*t+f];if(s===l){if(c<=0)return $(o,t,n);r[s*t+l]=Math.sqrt(c)}else r[s*t+l]=c/r[l*t+l]}let e=I(t,t);for(let s=0;s<t;s+=1){e[s*t+s]=1/r[s*t+s];for(let l=0;l<s;l+=1){let c=0;for(let f=l;f<s;f+=1)c+=r[s*t+f]*e[f*t+l];e[s*t+l]=-c*e[s*t+s]}}let i=n||I(t,t);i.fill(0);for(let s=0;s<t;s+=1)for(let l=0;l<=s;l+=1){let c=0;for(let f=s;f<t;f+=1)c+=e[f*t+s]*e[f*t+l];i[s*t+l]=c,i[l*t+s]=c}return i}function Ze(o,t,n=60){let r=Float64Array.from(o),e=wt(t);for(let s=0;s<n;s+=1){let l=0;for(let c=0;c<t;c+=1)for(let f=c+1;f<t;f+=1)l+=r[c*t+f]*r[c*t+f];if(l<1e-30)break;for(let c=0;c<t;c+=1)for(let f=c+1;f<t;f+=1){let u=r[c*t+f];if(Math.abs(u)<1e-300)continue;let y=(r[f*t+f]-r[c*t+c])/(2*u),x=Math.sign(y||1)/(Math.abs(y)+Math.sqrt(y*y+1)),m=1/Math.sqrt(x*x+1),h=x*m;for(let a=0;a<t;a+=1){let p=r[a*t+c],w=r[a*t+f];r[a*t+c]=m*p-h*w,r[a*t+f]=h*p+m*w}for(let a=0;a<t;a+=1){let p=r[c*t+a],w=r[f*t+a];r[c*t+a]=m*p-h*w,r[f*t+a]=h*p+m*w}for(let a=0;a<t;a+=1){let p=e[a*t+c],w=e[a*t+f];e[a*t+c]=m*p-h*w,e[a*t+f]=h*p+m*w}}}let i=new Float64Array(t);for(let s=0;s<t;s+=1)i[s]=r[s*t+s];return{values:i,vectors:e}}var St={};Y(St,{mvContract:()=>Ye,mvDual:()=>Ft,mvFromBivector:()=>Mt,mvFromRotor:()=>st,mvFromVector:()=>z,mvGp:()=>Z,mvGrade:()=>Ue,mvNorm:()=>Ke,mvReverse:()=>Je,mvToBivector:()=>At,mvToRotor:()=>Xe,mvToVector:()=>J,mvWedge:()=>bt,mvZero:()=>_});function _(o){return new Float64Array(o.N)}function z(o,t,n){let r=n||_(o);r.fill(0);for(let e=0;e<o.n;e+=1)r[o.vecBlade[e]]=t[e];return r}function Mt(o,t,n){let r=n||_(o);r.fill(0);for(let e=0;e<o.k;e+=1)r[o.biBlade[e]]=t[e];return r}function st(o,t,n){let r=n||_(o);r.fill(0);for(let e=0;e<o.r;e+=1)r[o.evenBlade[e]]=t[e];return r}function J(o,t,n){let r=n||new Float64Array(o.n);for(let e=0;e<o.n;e+=1)r[e]=t[o.vecBlade[e]];return r}function At(o,t,n){let r=n||new Float64Array(o.k);for(let e=0;e<o.k;e+=1)r[e]=t[o.biBlade[e]];return r}function Xe(o,t,n){let r=n||new Float64Array(o.r);for(let e=0;e<o.r;e+=1)r[e]=t[o.evenBlade[e]];return r}function Z(o,t,n,r){let e=r||_(o);if(e===t||e===n)throw new Error("mvGp: the output must not be an input");e.fill(0);let i=o.N;for(let s=0;s<i;s+=1){let l=t[s];if(l!==0)for(let c=0;c<i;c+=1){let f=n[c];if(f===0)continue;let u=s*i+c;e[o.gpBlade[u]]+=o.gpSign[u]*l*f}}return e}function bt(o,t,n,r){let e=r||_(o);if(e===t||e===n)throw new Error("mvWedge: the output must not be an input");e.fill(0);let i=o.N;for(let s=0;s<i;s+=1){let l=t[s];if(l!==0)for(let c=0;c<i;c+=1){let f=n[c];if(f===0||(s&c)!==0)continue;let u=s*i+c;e[s^c]+=o.gpSign[u]*l*f}}return e}function Ye(o,t,n,r){let e=r||_(o);if(e===t||e===n)throw new Error("mvContract: the output must not be an input");e.fill(0);let i=o.N;for(let s=0;s<i;s+=1){let l=t[s];if(l!==0)for(let c=0;c<i;c+=1){let f=n[c];if(f===0||(s&c)!==s)continue;let u=s*i+c;e[s^c]+=o.gpSign[u]*l*f}}return e}function Je(o,t,n){let r=n||_(o);for(let e=0;e<o.N;e+=1)r[e]=o.reverseSign[e]*t[e];return r}function Ue(o,t,n,r){let e=r||_(o);e.fill(0);for(let i=0;i<o.N;i+=1)o.grade[i]===n&&(e[i]=t[i]);return e}function Ft(o,t,n){let r=n||_(o);r.fill(0);let e=o.N-1,i=o.reverseSign[e],s=o.N;for(let l=0;l<s;l+=1){let c=t[l];if(c===0)continue;let f=l*s+e;r[o.gpBlade[f]]+=o.gpSign[f]*i*c}return r}function Ke(o,t){let n=0;for(let r=0;r<o.N;r+=1)n+=t[r]*t[r];return Math.sqrt(n)}var Ct={};Y(Ct,{rotorAddScaled:()=>to,rotorApplyBivector:()=>ge,rotorApplyVector:()=>_t,rotorApplyVectorInverse:()=>eo,rotorBetweenVectors:()=>we,rotorBivectorMatrix:()=>Tt,rotorCorrect:()=>Nt,rotorDefect:()=>Pt,rotorExp:()=>me,rotorFromBivectorAngle:()=>ye,rotorFromPlane:()=>kt,rotorIdentity:()=>P,rotorMatrix:()=>V,rotorMul:()=>L,rotorNorm:()=>Qe,rotorReverse:()=>It,rotorScale:()=>De});function P(o,t){let n=t||new Float64Array(o.r);return n.fill(0),n[o.scalarSlot]=1,n}function L(o,t,n,r){let e=o.r,i=r||new Float64Array(e);if(i===t||i===n)throw new Error("rotorMul: the output must not be an input");i.fill(0);for(let s=0;s<e;s+=1){let l=t[s];if(l!==0)for(let c=0;c<e;c+=1){let f=n[c];if(f===0)continue;let u=s*e+c;i[o.evenGpSlot[u]]+=o.evenGpSign[u]*l*f}}return i}function It(o,t,n){let r=n||new Float64Array(o.r);for(let e=0;e<o.r;e+=1)r[e]=o.reverseSign[o.evenBlade[e]]*t[e];return r}function Qe(o,t){let n=0;for(let r=0;r<o.r;r+=1)n+=t[r]*t[r];return Math.sqrt(n)}function De(o,t,n,r){let e=r||new Float64Array(o.r);for(let i=0;i<o.r;i+=1)e[i]=t[i]*n;return e}function to(o,t,n,r){for(let e=0;e<o.r;e+=1)t[e]+=n[e]*r;return t}function kt(o,t,n,r,e){let i=P(o,e),s=o.biOfBlade[1<<t|1<<n];if(s<0)throw new Error("rotorFromPlane: i and j must be different");let l=t<n?1:-1;return i[o.scalarSlot]=Math.cos(r/2),i[o.biSlot[s]]=-l*Math.sin(r/2),i}function me(o,t,n){let r=0;for(let y=0;y<o.k;y+=1)r+=t[y]*t[y];r=Math.sqrt(r);let e=0,i=1;for(;r*i>.25;)i/=2,e+=1;let s=new Float64Array(o.r);for(let y=0;y<o.k;y+=1)s[o.biSlot[y]]=t[y]*i;let l=P(o),c=P(o),f=new Float64Array(o.r);for(let y=1;y<=16;y+=1){L(o,l,s,f);for(let m=0;m<o.r;m+=1)f[m]/=y;let x=l;l=f,f=x;for(let m=0;m<o.r;m+=1)c[m]+=l[m]}for(let y=0;y<e;y+=1)c=L(o,c,c);let u=n||new Float64Array(o.r);return u.set(c),u}function ye(o,t,n,r){let e=0;for(let s=0;s<o.k;s+=1)e+=t[s]*t[s];if(e=Math.sqrt(e),e<1e-300)return P(o,r);let i=new Float64Array(o.k);for(let s=0;s<o.k;s+=1)i[s]=t[s]/e*n;return me(o,i,r)}var pe=new WeakMap;function de(o){let t=pe.get(o);return t||(t={a:_(o),b:_(o),c:_(o),d:_(o)},pe.set(o,t)),t}function _t(o,t,n,r){let e=de(o);st(o,t,e.a),z(o,n,e.b),Z(o,e.a,e.b,e.c);for(let i=0;i<o.N;i+=1)e.b[i]=o.reverseSign[i]*e.a[i];return Z(o,e.c,e.b,e.d),J(o,e.d,r)}function ge(o,t,n,r){let e=de(o);st(o,t,e.a),Mt(o,n,e.b),Z(o,e.a,e.b,e.c);for(let i=0;i<o.N;i+=1)e.b[i]=o.reverseSign[i]*e.a[i];return Z(o,e.c,e.b,e.d),At(o,e.d,r)}function eo(o,t,n,r){let e=It(o,t);return _t(o,e,n,r)}function V(o,t,n){let r=o.n,e=n||new Float64Array(r*r),i=new Float64Array(r),s=new Float64Array(r);for(let l=0;l<r;l+=1){i.fill(0),i[l]=1,_t(o,t,i,s);for(let c=0;c<r;c+=1)e[c*r+l]=s[c]}return e}function Tt(o,t,n){let r=o.k,e=n||new Float64Array(r*r),i=new Float64Array(r),s=new Float64Array(r);for(let l=0;l<r;l+=1){i.fill(0),i[l]=1,ge(o,t,i,s);for(let c=0;c<r;c+=1)e[c*r+l]=s[c]}return e}function we(o,t,n,r){let e=o.n,i=0;for(let c=0;c<e;c+=1)i+=t[c]*n[c];if(i>1-1e-12)return P(o,r);if(i<-1+1e-12){let c=0;for(let m=1;m<e;m+=1)Math.abs(t[m])<Math.abs(t[c])&&(c=m);let f=new Float64Array(e);f[c]=1;let u=0;for(let m=0;m<e;m+=1)u+=f[m]*t[m];for(let m=0;m<e;m+=1)f[m]-=u*t[m];let y=0;for(let m=0;m<e;m+=1)y+=f[m]*f[m];y=Math.sqrt(y);for(let m=0;m<e;m+=1)f[m]/=y;let x=new Float64Array(o.k);for(let m=0;m<o.k;m+=1){let[h,a]=o.pairs[m];x[m]=t[h]*f[a]-t[a]*f[h]}return ye(o,x,Math.PI,r)}let s=r||new Float64Array(o.r);s.fill(0),s[o.scalarSlot]=1+i;for(let c=0;c<o.k;c+=1){let[f,u]=o.pairs[c];s[o.biSlot[c]]=n[f]*t[u]-n[u]*t[f]}let l=1/Math.sqrt(2*(1+i));for(let c=0;c<o.r;c+=1)s[c]*=l;return s}function Nt(o,t,n){let r=o.n,e=V(o,t);for(let m=0;m<r;m+=1){for(let a=0;a<m;a+=1){let p=0;for(let w=0;w<r;w+=1)p+=e[w*r+m]*e[w*r+a];for(let w=0;w<r;w+=1)e[w*r+m]-=p*e[w*r+a]}let h=0;for(let a=0;a<r;a+=1)h+=e[a*r+m]*e[a*r+m];if(h=Math.sqrt(h),h<1e-12)return P(o,n);for(let a=0;a<r;a+=1)e[a*r+m]/=h}let i=P(o),s=new Float64Array(r*r);for(let m=0;m<r;m+=1)s[m*r+m]=1;let l=new Float64Array(r),c=new Float64Array(r),f=new Float64Array(r);for(let m=0;m<r-1;m+=1){for(let d=0;d<r;d+=1)l[d]=s[d*r+m],f[d]=e[d*r+m];let h=0;for(let d=0;d<r;d+=1)h+=l[d]*f[d];if(h>1-1e-15)continue;let a=we(o,l,f);i=L(o,a,i);let p=0;for(let d=0;d<r;d+=1)c[d]=f[d]-h*l[d],p+=c[d]*c[d];if(p=Math.sqrt(p),p<1e-15)continue;for(let d=0;d<r;d+=1)c[d]/=p;let w=h,g=p;for(let d=m;d<r;d+=1){let M=0,v=0;for(let F=0;F<r;F+=1)M+=s[F*r+d]*l[F],v+=s[F*r+d]*c[F];let A=M*w-v*g,b=M*g+v*w;for(let F=0;F<r;F+=1)s[F*r+d]+=(A-M)*l[F]+(b-v)*c[F]}}let u=0;for(let m=0;m<o.r;m+=1)u+=i[m]*t[m];let y=n||new Float64Array(o.r),x=u<0?-1:1;for(let m=0;m<o.r;m+=1)y[m]=i[m]*x;return y}function Pt(o,t){let n=It(o,t),r=L(o,t,n),e=Math.abs(r[o.scalarSlot]-1);for(let i=0;i<o.r;i+=1)i!==o.scalarSlot&&(e+=Math.abs(r[i]));return e}function U(o,t,n){let r=o.n,e=n||new Float64Array(o.k*r);e.fill(0);for(let i=0;i<o.k;i+=1){let[s,l]=o.pairs[i];e[i*r+l]=t[s],e[i*r+s]=-t[l]}return e}function Bt(o,t,n,r){let e=r||new Float64Array(o.k);for(let i=0;i<o.k;i+=1){let[s,l]=o.pairs[i];e[i]=t[s]*n[l]-t[l]*n[s]}return e}function oo(o,t,n,r){let e=o.n,i=r||new Float64Array(e);i.fill(0);for(let s=0;s<o.k;s+=1){let[l,c]=o.pairs[s],f=n[s];i[c]+=t[l]*f,i[l]-=t[c]*f}return i}function Rt(o,t,n,r){let e=o.k,i=r||new Float64Array(e);i.fill(0);let s=o.comm;for(let l=0;l<e;l+=1){let c=t[l];if(c!==0)for(let f=0;f<e;f+=1){let u=n[f];if(u===0)continue;let y=(l*e+f)*e,x=c*u;for(let m=0;m<e;m+=1){let h=s[y+m];h!==0&&(i[m]+=h*x)}}}return i}function it(o,t,n){let r=o.k,e=n||new Float64Array(r*r);e.fill(0);let i=o.comm;for(let s=0;s<r;s+=1){let l=t[s];if(l!==0)for(let c=0;c<r;c+=1){let f=(s*r+c)*r;for(let u=0;u<r;u+=1){let y=i[f+u];y!==0&&(e[u*r+c]+=y*l)}}}return e}var ro=1,j=class{constructor(t,n={}){let{n:r,k:e,r:i}=t;this.D=t,this.id=n.id!==void 0?n.id:ro++,this.shape=n.shape,this.name=n.name||"",this.mass=n.mass!==void 0?n.mass:1,this.isStatic=this.mass<=0||this.shape.type==="halfspace",this.isStatic&&(this.mass=0),this.invMass=this.isStatic?0:1/this.mass,this.x=new Float64Array(r),n.position&&this.x.set(n.position),this.R=P(t),n.rotor&&this.R.set(n.rotor),this.v=new Float64Array(r),n.velocity&&this.v.set(n.velocity),this.L=new Float64Array(e),this.w=new Float64Array(e),this.inertia=this.isStatic?I(e,e):this.shape.inertia(this.mass),this.invInertia=this.isStatic?I(e,e):xt(this.inertia,e),this.Rm=I(r,r),this.R2=I(e,e),this.invInertiaWorld=I(e,e),this.force=new Float64Array(r),this.torque=new Float64Array(e),this.friction=n.friction!==void 0?n.friction:.5,this.restitution=n.restitution!==void 0?n.restitution:.1,this.linearDamping=n.linearDamping||0,this.angularDamping=n.angularDamping||0,this.linearFactor=new Float64Array(r).fill(1),n.linearFactor&&this.linearFactor.set(n.linearFactor),this.angularFactor=new Float64Array(e).fill(1),n.angularFactor&&this.angularFactor.set(n.angularFactor),this.sleeping=!1,this.sleepTimer=0,this.allowSleep=n.allowSleep!==!1,this.level=0,this._tmpN=new Float64Array(r),this._tmpK=new Float64Array(e),this._star=new Float64Array(e*r),this.updateDerived(),n.angularVelocity&&this.setAngularVelocity(n.angularVelocity)}updateDerived(){let{D:t}=this,{n,k:r}=t;if(V(t,this.R,this.Rm),Tt(t,this.R,this.R2),this.isStatic)this.w.fill(0);else{let e=O(this.R2,this.invInertia,r,r,r);nt(e,this.R2,r,r,r,this.invInertiaWorld),T(this.invInertiaWorld,this.L,r,r,this.w)}}inertiaWorld(){let{k:t}=this.D,n=O(this.R2,this.inertia,t,t,t);return nt(n,this.R2,t,t,t)}setAngularVelocity(t){let{k:n}=this.D;if(this.w.set(t),this.isStatic){this.L.fill(0);return}let r=this.inertiaWorld();T(r,this.w,n,n,this.L)}setLinearVelocity(t){this.v.set(t),this.wake()}localToWorldDir(t,n){return T(this.Rm,t,this.D.n,this.D.n,n)}worldToLocalDir(t,n){return G(this.Rm,t,this.D.n,this.D.n,n)}localToWorld(t,n){let r=this.localToWorldDir(t,n);for(let e=0;e<this.D.n;e+=1)r[e]+=this.x[e];return r}worldToLocal(t,n){let{n:r}=this.D,e=this._tmpN;for(let i=0;i<r;i+=1)e[i]=t[i]-this.x[i];return this.worldToLocalDir(e,n)}pointVelocity(t,n){let{n:r,k:e}=this.D,i=n||new Float64Array(r),s=U(this.D,t,this._star);G(s,this.w,e,r,i);for(let l=0;l<r;l+=1)i[l]+=this.v[l];return i}applyImpulse(t,n){if(this.isStatic)return;let{n:r,k:e}=this.D;for(let l=0;l<r;l+=1)this.v[l]+=this.invMass*t[l]*this.linearFactor[l];let i=U(this.D,n,this._star),s=T(i,t,e,r,this._tmpK);for(let l=0;l<e;l+=1)this.L[l]+=s[l]*this.angularFactor[l];T(this.invInertiaWorld,this.L,e,e,this.w),this.wake()}applyCentralImpulse(t){if(!this.isStatic){for(let n=0;n<this.D.n;n+=1)this.v[n]+=this.invMass*t[n]*this.linearFactor[n];this.wake()}}applyTorqueImpulse(t){if(this.isStatic)return;let{k:n}=this.D;for(let r=0;r<n;r+=1)this.L[r]+=t[r]*this.angularFactor[r];T(this.invInertiaWorld,this.L,n,n,this.w),this.wake()}applyCentralForce(t){for(let n=0;n<this.D.n;n+=1)this.force[n]+=t[n];this.wake()}applyForce(t,n){let{n:r,k:e}=this.D;for(let l=0;l<r;l+=1)this.force[l]+=t[l];let i=U(this.D,n,this._star),s=T(i,t,e,r,this._tmpK);for(let l=0;l<e;l+=1)this.torque[l]+=s[l];this.wake()}applyTorque(t){for(let n=0;n<this.D.k;n+=1)this.torque[n]+=t[n];this.wake()}clearForces(){this.force.fill(0),this.torque.fill(0)}wake(){this.sleeping&&(this.sleeping=!1),this.sleepTimer=0}kineticEnergy(){let{n:t,k:n}=this.D;if(this.isStatic)return 0;let r=0;for(let i=0;i<t;i+=1)r+=this.v[i]*this.v[i];r*=.5*this.mass;let e=0;for(let i=0;i<n;i+=1)e+=this.w[i]*this.L[i];return r+.5*e}aabb(t=0){let{n}=this.D,r=new Float64Array(n),e=new Float64Array(n);if(this.shape.type==="halfspace")return r.fill(-1/0),e.fill(1/0),{min:r,max:e};if(this.shape.type==="box"){let s=this.shape.halfExtents;for(let l=0;l<n;l+=1){let c=0;for(let f=0;f<n;f+=1)c+=Math.abs(this.Rm[l*n+f])*s[f];r[l]=this.x[l]-c-t,e[l]=this.x[l]+c+t}return{min:r,max:e}}let i=this.shape.boundingRadius+t;for(let s=0;s<n;s+=1)r[s]=this.x[s]-i,e[s]=this.x[s]+i;return{min:r,max:e}}};var xe=new WeakMap;function no(o){let t=xe.get(o);if(t)return t;let{n,k:r,eStar:e}=o;t=[];for(let i=0;i<n;i+=1){t.push([]);for(let s=0;s<n;s+=1){let l=I(r,r);for(let c=0;c<r;c+=1)for(let f=0;f<r;f+=1){let u=0;for(let y=0;y<n;y+=1)u+=e[i][c*n+y]*e[s][f*n+y];l[c*r+f]=u}t[i].push(l)}}return xe.set(o,t),t}function K(o,t,n){let{n:r,k:e}=o,i=no(o),s=n||I(e,e);s.fill(0);for(let l=0;l<r;l+=1)for(let c=0;c<r;c+=1){let f=t[l*r+c];if(f===0)continue;let u=i[l][c];for(let y=0;y<e*e;y+=1)s[y]+=f*u[y]}return s}function Q(o,t,n,r=1){let{n:e,cXX:i,cXY:s,simplexVolumeDiv:l,simplexMomentDiv:c}=o,f=n.length/e,u=I(e,e),y=I(e,e);for(let g=0;g<e;g+=1)for(let d=0;d<e;d+=1)y[g*e+d]=g===d?i:s;let x=0,m=new Float64Array(e),h=I(e,e),a=I(e,e);for(let g=0;g<f;g+=1){for(let M=0;M<e;M+=1){let v=n[g*e+M]*e;for(let A=0;A<e;A+=1)u[A*e+M]=t[v+A]}let d=H(u,e);if(d!==0){x+=d/l;for(let M=0;M<e;M+=1){let v=0;for(let A=0;A<e;A+=1)v+=u[M*e+A];m[M]+=d*v/c}a.fill(0);for(let M=0;M<e;M+=1)for(let v=0;v<e;v+=1){let A=u[M*e+v];if(A!==0)for(let b=0;b<e;b+=1)a[M*e+b]+=A*y[v*e+b]}for(let M=0;M<e;M+=1)for(let v=0;v<e;v+=1){let A=0;for(let b=0;b<e;b+=1)A+=a[M*e+b]*u[v*e+b];h[M*e+v]+=d*A}}}if(x<0){x=-x;for(let g=0;g<e;g+=1)m[g]=-m[g];for(let g=0;g<e*e;g+=1)h[g]=-h[g]}if(x<=0)throw new Error("massProperties: the volume is zero");let p=new Float64Array(e);for(let g=0;g<e;g+=1)p[g]=m[g]/x;let w=I(e,e);for(let g=0;g<e;g+=1)for(let d=0;d<e;d+=1)w[g*e+d]=r*(h[g*e+d]-x*p[g]*p[d]);return{volume:x,mass:r*x,center:p,covariance:w,inertia:K(o,w)}}function ve(o){if(o.length<=1)return[o.slice()];let t=[];for(let n=0;n<o.length;n+=1){let r=o.slice(0,n).concat(o.slice(n+1));for(let e of ve(r))t.push([o[n]].concat(e))}return t}function lt(o,t){let n=o.n,r=1<<n,e=new Float64Array(r*n);for(let c=0;c<r;c+=1)for(let f=0;f<n;f+=1)e[c*n+f]=c>>f&1?t[f]:-t[f];let i=[];for(let c=0;c<n;c+=1){let f=[];for(let y=0;y<n;y+=1)y!==c&&f.push(y);let u=ve(f);for(let y of[0,1])for(let x of u){let m=y?1<<c:0,h=[m];for(let a of x)m|=1<<a,h.push(m);i.push(h)}}let s=I(n,n),l=new Int32Array(i.length*n);for(let c=0;c<i.length;c+=1){let f=i[c];for(let u=0;u<n;u+=1)for(let y=0;y<n;y+=1)s[y*n+u]=e[f[u]*n+y];if(H(s,n)<0){let u=f[0];f[0]=f[1],f[1]=u}for(let u=0;u<n;u+=1)l[c*n+u]=f[u]}return{vertices:e,cells:l}}function Me(o,t,n){let{n:r,k:e}=o,i=I(e,e);for(let s=0;s<e;s+=1){let[l,c]=o.pairs[s];i[s*e+s]=n/3*(t[l]*t[l]+t[c]*t[c])}return i}function Ae(o,t,n){let{n:r,k:e}=o,i=I(e,e),s=2*n*t*t/(r+2);for(let l=0;l<e;l+=1)i[l*e+l]=s;return i}function Lt(o,t){let n;if(o%2===0){let r=o/2,e=1;for(let i=2;i<=r;i+=1)e*=i;n=Math.PI**r/e}else{let r=(o-1)/2,e=2**(r+1),i=1;for(let s=1;s<=o;s+=2)i*=s;n=e*Math.PI**r/i}return n*t**o}function Vt(o,t){let n=Float64Array.from(t);if(n.length!==o.n)throw new Error("HyperBox: wrong number of half extents");let r=0;for(let e=0;e<o.n;e+=1)r+=n[e]*n[e];return{type:"box",n:o.n,halfExtents:n,boundingRadius:Math.sqrt(r),volume:n.reduce((e,i)=>e*2*i,1),support(e,i){let s=i||new Float64Array(o.n);for(let l=0;l<o.n;l+=1)s[l]=e[l]>=0?n[l]:-n[l];return s},mesh(){return lt(o,n)},inertia(e){return Me(o,n,e)}}}function jt(o,t){return{type:"sphere",n:o.n,radius:t,boundingRadius:t,volume:Lt(o.n,t),support(n,r){let e=r||new Float64Array(o.n),i=0;for(let s=0;s<o.n;s+=1)i+=n[s]*n[s];i=Math.sqrt(i)||1;for(let s=0;s<o.n;s+=1)e[s]=n[s]/i*t;return e},mesh(){return null},inertia(n){return Ae(o,t,n)}}}function qt(o,t,n=0){let r=Float64Array.from(t),e=0;for(let i=0;i<o.n;i+=1)e+=r[i]*r[i];e=Math.sqrt(e);for(let i=0;i<o.n;i+=1)r[i]/=e;return{type:"halfspace",n:o.n,normal:r,offset:n,boundingRadius:1/0,volume:1/0,support(){throw new Error("HalfSpace: a half space has no support point")},mesh(){return null},inertia(){return I(o.k,o.k)}}}function Wt(o,t,n){let r=Float64Array.from(t),e=[];for(let u=0;u<n.length;u+=o.n){let y=[];for(let x=0;x<o.n;x+=1)y.push(n[u+x]);e.push(y)}let i=new Float64Array(o.n),s=Ot(r,e,o.n,()=>i),l=r.length/o.n,c=0;for(let u=0;u<l;u+=1){let y=0;for(let x=0;x<o.n;x+=1)y+=r[u*o.n+x]*r[u*o.n+x];y>c&&(c=y)}let f=Q(o,r,s,1);return{type:"convex",n:o.n,vertices:r,cells:s,boundingRadius:Math.sqrt(c),volume:f.volume,support(u,y){let x=y||new Float64Array(o.n),m=-1/0,h=0;for(let a=0;a<l;a+=1){let p=0;for(let w=0;w<o.n;w+=1)p+=r[a*o.n+w]*u[w];p>m&&(m=p,h=a)}for(let a=0;a<o.n;a+=1)x[a]=r[h*o.n+a];return x},mesh(){return{vertices:r,cells:s}},inertia(u){return Q(o,r,s,u/f.volume).inertia}}}function be(o,t,n){return 2*Math.PI*t*Lt(o-1,n)}function Fe(o,t,n,r,e){let{n:i}=o,s=I(i,i),l=e*(t*t+3*n*n/(i+1))/2,c=e*n*n/(i+1);for(let f=0;f<i;f+=1)s[f*i+f]=f===r[0]||f===r[1]?l:c;return s}function Se(o,t,n,r,e){return K(o,Fe(o,t,n,r,e))}function at(o,t,n,r,e){let{n:i}=o;if(i===3)return so(o,t,n,r,e||[32,16]);if(i===4)return lo(o,t,n,r,e||[16,8,12]);throw new Error("torusMesh: only n = 3 and n = 4 have a mesh")}function Et(o,t){let n=[];for(let r=0;r<o;r+=1)r!==t[0]&&r!==t[1]&&n.push(r);return n}function Ot(o,t,n,r){let e=I(n,n),i=new Float64Array(n);for(let l=0;l<t.length;l+=1){let c=t[l];i.fill(0);for(let u=0;u<n;u+=1)for(let y=0;y<n;y+=1)i[y]+=o[c[u]*n+y]/n;let f=r(i);for(let u=0;u<n;u+=1)for(let y=0;y<n;y+=1)e[y*n+u]=o[c[u]*n+y]-f[y];if(H(e,n)<0){let u=c[0];c[0]=c[1],c[1]=u}}let s=new Int32Array(t.length*n);for(let l=0;l<t.length;l+=1)for(let c=0;c<n;c+=1)s[l*n+c]=t[l][c];return s}function so(o,t,n,r,e){let[s,l]=e,[c,f]=r,u=Et(3,r)[0],y=new Float64Array(s*l*3),x=(h,a)=>h%s*l+a%l;for(let h=0;h<s;h+=1){let a=2*Math.PI*h/s;for(let p=0;p<l;p+=1){let w=2*Math.PI*p/l,g=t+n*Math.cos(w),d=x(h,p)*3;y[d+c]=g*Math.cos(a),y[d+f]=g*Math.sin(a),y[d+u]=n*Math.sin(w)}}let m=[];for(let h=0;h<s;h+=1)for(let a=0;a<l;a+=1){let p=x(h,a),w=x(h+1,a),g=x(h,a+1),d=x(h+1,a+1);m.push([p,w,d]),m.push([p,d,g])}return{vertices:y,cells:Ot(y,m,3,Ie(3,t,r))}}function Ie(o,t,n){let r=new Float64Array(o);return e=>{r.fill(0);let i=Math.hypot(e[n[0]],e[n[1]]),s=1,l=0;i>1e-12&&(s=e[n[0]]/i,l=e[n[1]]/i),r[n[0]]=t*s,r[n[1]]=t*l;for(let c=0;c<o;c+=1)r[c]=r[c]+(e[c]-r[c])*.5;return r}}var io=[[0,1,2],[0,2,1],[1,0,2],[1,2,0],[2,0,1],[2,1,0]];function lo(o,t,n,r,e){let[s,l,c]=e,[f,u]=r,y=Et(4,r),x=y[0],m=y[1],h=l+1,a=new Float64Array(s*h*c*4),p=(g,d,M)=>(g%s*h+d)*c+M%c;for(let g=0;g<s;g+=1){let d=2*Math.PI*g/s;for(let M=0;M<h;M+=1){let v=Math.PI*M/l;for(let A=0;A<c;A+=1){let b=2*Math.PI*A/c,F=Math.sin(v)*Math.cos(b),S=Math.sin(v)*Math.sin(b),k=Math.cos(v),N=t+n*F,C=p(g,M,A)*4;a[C+f]=N*Math.cos(d),a[C+u]=N*Math.sin(d),a[C+x]=n*S,a[C+m]=n*k}}}let w=[];for(let g=0;g<s;g+=1)for(let d=0;d<l;d+=1)for(let M=0;M<c;M+=1){let v=(A,b,F)=>p(g+A,d+b,M+F);for(let A of io){let b=[0,0,0],F=[v(0,0,0)];for(let S of A)b[S]=1,F.push(v(b[0],b[1],b[2]));w.push(F)}}return{vertices:a,cells:Ot(a,w,4,Ie(4,t,r))}}function Gt(o,t,n,r=[0,1],e=null){let{n:i}=o,s=t,l=n,c=[r[0],r[1]];if(c[0]===c[1]||c[0]<0||c[1]<0||c[0]>=i||c[1]>=i)throw new Error("Torus: the major plane needs two different axes");let f=Et(i,c);return{type:"torus",n:i,majorRadius:s,minorRadius:l,plane:c,otherAxes:f,boundingRadius:s+l,volume:be(i,s,l),support(u,y){let x=y||new Float64Array(i),m=0;for(let d=0;d<i;d+=1)m+=u[d]*u[d];m=Math.sqrt(m)||1;let h=u[c[0]]/m,a=u[c[1]]/m,p=Math.hypot(h,a),w=1,g=0;p>1e-12&&(w=h/p,g=a/p);for(let d=0;d<i;d+=1)x[d]=u[d]/m*l;return x[c[0]]+=s*w,x[c[1]]+=s*g,x},corePoint(u,y){let x=y||new Float64Array(i);x.fill(0);let m=Math.hypot(u[c[0]],u[c[1]]);return m>1e-12?(x[c[0]]=u[c[0]]/m*s,x[c[1]]=u[c[1]]/m*s):x[c[0]]=s,x},coreDistance(u){let y=Math.hypot(u[c[0]],u[c[1]]),x=(y-s)*(y-s);for(let m of f)x+=u[m]*u[m];return Math.sqrt(x)},mesh(u){return at(o,s,l,c,u||e)},inertia(u){return Se(o,s,l,c,u)}}}function ke(o,t,n){let r=o.length-1;if(r===0)return o[0];let e=[];for(let u=1;u<=r;u+=1){let y=new Float64Array(n);for(let x=0;x<n;x+=1)y[x]=o[u][x]-o[0][x];e.push(y)}let i=new Float64Array(r*r),s=new Float64Array(r);for(let u=0;u<r;u+=1){for(let x=0;x<r;x+=1){let m=0;for(let h=0;h<n;h+=1)m+=e[u][h]*e[x][h];i[u*r+x]=m}let y=0;for(let x=0;x<n;x+=1)y+=(t[x]-o[0][x])*e[u][x];s[u]=y}let l=$(i,r);if(l){let u=new Float64Array(r),y=0,x=!0;for(let m=0;m<r;m+=1){let h=0;for(let a=0;a<r;a+=1)h+=l[m*r+a]*s[a];u[m]=h,y+=h,h<-1e-12&&(x=!1)}if(x&&y<=1+1e-12){let m=new Float64Array(n);for(let h=0;h<n;h+=1){let a=o[0][h];for(let p=0;p<r;p+=1)a+=u[p]*e[p][h];m[h]=a}return m}}let c=null,f=1/0;for(let u=0;u<=r;u+=1){let y=o.filter((h,a)=>a!==u),x=ke(y,t,n),m=0;for(let h=0;h<n;h+=1)m+=(x[h]-t[h])*(x[h]-t[h]);m<f&&(f=m,c=x)}return c}function ao(o,t){let n=[];for(let l=1;l<t;l+=1){let c=new Float64Array(t);for(let f=0;f<t;f+=1)c[f]=o[l][f]-o[0][f];n.push(c)}let r=new Float64Array(t),e=new Float64Array((t-1)*(t-1));for(let l=0;l<t;l+=1){let c=0;for(let f=0;f<t;f+=1)if(f!==l){for(let u=0;u<t-1;u+=1)e[u*(t-1)+c]=n[u][f];c+=1}r[l]=(l%2?-1:1)*_e(e,t-1)}let i=0;for(let l=0;l<t;l+=1)i+=r[l]*r[l];if(i=Math.sqrt(i),i<1e-14)return null;let s=0;for(let l=0;l<t;l+=1)r[l]/=i,s+=r[l]*o[0][l];if(s<0)for(let l=0;l<t;l+=1)r[l]=-r[l];return r}function _e(o,t){if(t===1)return o[0];if(t===2)return o[0]*o[3]-o[1]*o[2];if(t===3)return o[0]*(o[4]*o[8]-o[5]*o[7])-o[1]*(o[3]*o[8]-o[5]*o[6])+o[2]*(o[3]*o[7]-o[4]*o[6]);let n=0,r=new Float64Array((t-1)*(t-1));for(let e=0;e<t;e+=1){let i=0;for(let s=0;s<t;s+=1)if(s!==e){for(let l=1;l<t;l+=1)r[(l-1)*(t-1)+i]=o[l*t+s];i+=1}n+=(e%2?-1:1)*o[e]*_e(r,t-1)}return n}function Te(o,t,n,r,e){let i=n.length/o,s=null,l=1/0,c=!0,f=new Array(o);for(let u=0;u<i;u+=1){for(let h=0;h<o;h+=1){let a=n[u*o+h]*o;f[h]=t.subarray(a,a+o)}let y=ke(f.slice(),r,o),x=0;for(let h=0;h<o;h+=1)x+=(y[h]-r[h])*(y[h]-r[h]);x<l&&(l=x,s=y);let m=e[u];if(m){let h=0;for(let a=0;a<o;a+=1)h+=m[a]*(r[a]-f[0][a]);h>0&&(c=!1)}}return{point:s,distance:Math.sqrt(l),inside:c}}function Ne(o,t,n){let r=n.length/o,e=new Array(r),i=new Array(o);for(let s=0;s<r;s+=1){for(let l=0;l<o;l+=1){let c=n[s*o+l]*o;i[l]=t.subarray(c,c+o)}e[s]=ao(i,o)}return e}var Pe=new WeakMap;function Ht(o,t){if(t===0)return[[]];if(t>o.length)return[];let n=[];for(let r=0;r<=o.length-t;r+=1)for(let e of Ht(o.slice(r+1),t-1))n.push([o[r]].concat(e));return n}function co(o){let t=Pe.get(o);if(t)return t;let{n}=o,r=[];for(let e=0;e<n;e+=1)r.push(e);t=[];for(let e=1;e<=n-2;e+=1){let i=n-1-e;if(!(i<1))for(let s of Ht(r,e))for(let l of Ht(r,i))t.push([s,l])}return Pe.set(o,t),t}function ft(o,t){let{n}=o,r=[];for(let i=0;i<n;i+=1)r.push(i);r.sort((i,s)=>Math.abs(t[i])-Math.abs(t[s]));let e=[];for(let i of r){if(e.length===n-1)break;let s=new Float64Array(n);s[i]=1;let l=0;for(let f=0;f<n;f+=1)l+=s[f]*t[f];for(let f=0;f<n;f+=1)s[f]-=l*t[f];for(let f of e){let u=0;for(let y=0;y<n;y+=1)u+=s[y]*f[y];for(let y=0;y<n;y+=1)s[y]-=u*f[y]}let c=0;for(let f=0;f<n;f+=1)c+=s[f]*s[f];if(c=Math.sqrt(c),!(c<1e-6)){for(let f=0;f<n;f+=1)s[f]/=c;e.push(s)}}return e}function B(o,t,n,r,e,i){return{a:t,b:n,normal:Float64Array.from(r),point:Float64Array.from(e),depth:i,rA:new Float64Array(o.n),rB:new Float64Array(o.n),normalImpulse:0,tangentImpulse:null,tangents:null,kn:0,kt:null,target:0}}function fo(o,t,n,r){let{n:e}=o,i=new Float64Array(e),s=0;for(let u=0;u<e;u+=1)i[u]=n.x[u]-t.x[u],s+=i[u]*i[u];s=Math.sqrt(s);let c=t.shape.radius+n.shape.radius-s;if(c<-0)return;s<1e-12&&(i[0]=1,s=1);for(let u=0;u<e;u+=1)i[u]/=s;let f=new Float64Array(e);for(let u=0;u<e;u+=1)f[u]=t.x[u]+i[u]*(t.shape.radius-c/2);r.push(B(o,t,n,i,f,c))}function Ce(o,t,n,r,e){let{n:i}=o,s=t.worldToLocal(n.x),l=t.shape.halfExtents,c=new Float64Array(i),f=!0;for(let a=0;a<i;a+=1)c[a]=Math.max(-l[a],Math.min(l[a],s[a])),c[a]!==s[a]&&(f=!1);let u=new Float64Array(i),y=0;for(let a=0;a<i;a+=1)u[a]=s[a]-c[a],y+=u[a]*u[a];let x;if(f){let a=1/0,p=0,w=1;for(let g=0;g<i;g+=1){let d=l[g]-Math.abs(s[g]);d<a&&(a=d,p=g,w=s[g]>=0?1:-1)}u.fill(0),u[p]=w,c[p]=w*l[p],x=n.shape.radius+a}else{let a=Math.sqrt(y);if(x=n.shape.radius-a,x<0)return;for(let p=0;p<i;p+=1)u[p]/=a}let m=t.localToWorldDir(u),h=t.localToWorld(c);if(e){for(let a=0;a<i;a+=1)m[a]=-m[a];r.push(B(o,n,t,m,h,x))}else r.push(B(o,t,n,m,h,x))}function uo(o,t,n){let{n:r}=o,e=t.shape,i=t.worldToLocalDir(n),s=[];s.push(e.support(i));let[l,c]=e.plane,f=e.majorRadius,u=e.minorRadius,y=0;for(let m=0;m<r;m+=1)y+=i[m]*i[m];y=Math.sqrt(y)||1;let x=12;for(let m=0;m<x;m+=1){let h=2*Math.PI*m/x,a=new Float64Array(r);for(let p=0;p<r;p+=1)a[p]=i[p]/y*u;a[l]+=f*Math.cos(h),a[c]+=f*Math.sin(h),s.push(a)}return s.map(m=>t.localToWorld(m))}function Be(o,t,n,r,e){let{n:i}=o,s=t.shape,l=t.worldToLocal(n.x),c=s.corePoint(l),f=new Float64Array(i),u=0;for(let a=0;a<i;a+=1)f[a]=l[a]-c[a],u+=f[a]*f[a];if(u=Math.sqrt(u),u<1e-12)f.fill(0),f[s.plane[0]]=1,u=1;else for(let a=0;a<i;a+=1)f[a]/=u;let y=n.shape.radius+s.minorRadius-u;if(y<0)return;let x=new Float64Array(i);for(let a=0;a<i;a+=1)x[a]=c[a]+f[a]*s.minorRadius;let m=t.localToWorldDir(f),h=t.localToWorld(x);if(e){for(let a=0;a<i;a+=1)m[a]=-m[a];r.push(B(o,n,t,m,h,y))}else r.push(B(o,t,n,m,h,y))}var Re=new WeakMap;function Le(o,t,n,r,e){let{n:i}=o,s=t.shape,l=Re.get(s);l||(l=Ne(i,s.vertices,s.cells),Re.set(s,l));let c=t.worldToLocal(n.x),f=Te(i,s.vertices,s.cells,c,l),u=new Float64Array(i),y;if(f.inside){for(let a=0;a<i;a+=1)u[a]=f.point[a]-c[a];y=n.shape.radius+f.distance}else{for(let a=0;a<i;a+=1)u[a]=c[a]-f.point[a];if(y=n.shape.radius-f.distance,y<0)return}let x=0;for(let a=0;a<i;a+=1)x+=u[a]*u[a];if(x=Math.sqrt(x),x<1e-12)u.fill(0),u[0]=1;else for(let a=0;a<i;a+=1)u[a]/=x;let m=t.localToWorldDir(u),h=t.localToWorld(f.point);if(e){for(let a=0;a<i;a+=1)m[a]=-m[a];r.push(B(o,n,t,m,h,y))}else r.push(B(o,t,n,m,h,y))}var Ve=!1;function je(o,t){Ve||(Ve=!0,typeof console<"u"&&console.warn&&console.warn(`PhysiN: no collision test for the pair (${o}, ${t}). A torus and a convex mesh touch a half space and a hypersphere only.`))}function qe(o,t,n,r,e,i){let{n:s}=o,l=t.shape.normal,c=t.shape.offset,f=(y,x)=>{if(!(x<-i))if(e){let m=new Float64Array(s);for(let h=0;h<s;h+=1)m[h]=-l[h];r.push(B(o,n,t,m,y,x))}else r.push(B(o,t,n,l,y,x))};if(n.shape.type==="torus"){let y=new Float64Array(s);for(let x=0;x<s;x+=1)y[x]=-l[x];for(let x of uo(o,n,y)){let m=-c;for(let h=0;h<s;h+=1)m+=l[h]*x[h];f(x,-m)}return}if(n.shape.type==="sphere"){let y=-c;for(let h=0;h<s;h+=1)y+=l[h]*n.x[h];let x=n.shape.radius-y,m=new Float64Array(s);for(let h=0;h<s;h+=1)m[h]=n.x[h]-l[h]*n.shape.radius;f(m,x);return}let u=D(o,n);for(let y of u){let x=-c;for(let m=0;m<s;m+=1)x+=l[m]*y[m];f(y,-x)}}var We=new WeakMap;function D(o,t){let{n}=o,r=We.get(t.shape);if(!r){if(r=[],t.shape.type==="box"){let e=t.shape.halfExtents;for(let i=0;i<1<<n;i+=1){let s=new Float64Array(n);for(let l=0;l<n;l+=1)s[l]=i>>l&1?e[l]:-e[l];r.push(s)}}else if(t.shape.vertices){let e=t.shape.vertices;for(let i=0;i<e.length/n;i+=1)r.push(e.subarray(i*n,i*n+n))}We.set(t.shape,r)}return r.map(e=>t.localToWorld(e))}function ct(o,t,n){let{n:r}=o;if(t.shape.type==="sphere")return t.shape.radius;let e=t.shape.halfExtents,i=0;for(let s=0;s<r;s+=1){let l=0;for(let c=0;c<r;c+=1)l+=t.Rm[c*r+s]*n[c];i+=Math.abs(l)*e[s]}return i}function $t(o,t,n){let{n:r}=o,e=co(o),i=new Float64Array(r);for(let p=0;p<r;p+=1)i[p]=n.x[p]-t.x[p];let s=1/0,l="mixed",c=new Float64Array(r),f=new Float64Array(r),u="mixed",y=()=>{let p=0;for(let d=0;d<r;d+=1)p+=f[d]*f[d];if(p<1e-12)return!0;p=Math.sqrt(p);for(let d=0;d<r;d+=1)f[d]/=p;let w=0;for(let d=0;d<r;d+=1)w+=f[d]*i[d];let g=ct(o,t,f)+ct(o,n,f)-Math.abs(w);if(g<0)return!1;if(g<s){s=g,l=u;let d=w<0?-1:1;for(let M=0;M<r;M+=1)c[M]=f[M]*d}return!0};for(let[p,w]of[[t,"a"],[n,"b"]]){u=w;for(let g=0;g<r;g+=1){for(let d=0;d<r;d+=1)f[d]=p.Rm[d*r+g];if(!y())return null}}u="mixed";let x=_(o),m=_(o),h=_(o),a=new Float64Array(r);for(let[p,w]of e){let g=null,d=m;for(let[v,A]of[[t,p],[n,w]])for(let b of A){for(let F=0;F<r;F+=1)a[F]=v.Rm[F*r+b];if(g===null)g=z(o,a,x);else{z(o,a,h),bt(o,g,h,d);let F=g;g=d,d=F}}if(!g)continue;let M=Ft(o,g,h);if(J(o,M,f),!y())return null}return Number.isFinite(s)?{axis:c,overlap:s,owner:l}:null}function ho(o,t,n,r,e,i){let s=$t(o,t,n);if(!s)return;let{n:l}=o,c=s.axis,f=m=>{let h=0;for(let a=0;a<l;a+=1)h+=m[a]*c[a];return h},u=f(t.x),y=f(n.x),x=[];if(s.owner==="a"||s.owner==="mixed"){let m=u+ct(o,t,c);for(let h of D(o,n)){let a=m-f(h);a>-e&&a<=s.overlap+e&&x.push([h,a])}}if(s.owner==="b"||s.owner==="mixed"){let m=y-ct(o,n,c);for(let h of D(o,t)){let a=f(h)-m;a>-e&&a<=s.overlap+e&&x.push([h,a])}}if(x.length===0){let m=new Float64Array(l);for(let w=0;w<l;w+=1)m[w]=-c[w];let h=t.localToWorld(t.shape.support(t.worldToLocalDir(c))),a=n.localToWorld(n.shape.support(n.worldToLocalDir(m))),p=new Float64Array(l);for(let w=0;w<l;w+=1)p[w]=(h[w]+a[w])/2;x.push([p,s.overlap])}x.sort((m,h)=>h[1]-m[1]);for(let m=0;m<Math.min(x.length,i);m+=1)r.push(B(o,t,n,c,x[m][0],x[m][1]))}function ut(o,t,n,r,e={}){let i=e.contactMargin!==void 0?e.contactMargin:.02,s=e.maxContacts||1<<o.n-1,l=t.shape.type,c=n.shape.type;if(!(l==="halfspace"&&c==="halfspace"))return l==="halfspace"?qe(o,t,n,r,!1,i):c==="halfspace"?qe(o,n,t,r,!0,i):l==="sphere"&&c==="sphere"?fo(o,t,n,r):l==="convex"&&c==="sphere"?Le(o,t,n,r,!1):c==="convex"&&l==="sphere"?Le(o,n,t,r,!0):l==="convex"||c==="convex"?je(l,c):l==="torus"&&c==="sphere"?Be(o,t,n,r,!1):c==="torus"&&l==="sphere"?Be(o,n,t,r,!0):l==="torus"||c==="torus"?je(l,c):l==="sphere"&&c!=="sphere"?Ce(o,n,t,r,!0):c==="sphere"&&l!=="sphere"?Ce(o,t,n,r,!1):ho(o,t,n,r,i,s)}function ht(o,t,n,r,e){if(t.isStatic||t.sleeping)return;let{n:i,k:s}=o;for(let l=0;l<i;l+=1)t.v[l]+=n*(t.invMass*t.force[l]+r[l])*t.linearFactor[l];if(t.linearDamping>0){let l=1/(1+n*t.linearDamping);for(let c=0;c<i;c+=1)t.v[c]*=l}for(let l=0;l<s;l+=1)t.L[l]+=n*t.torque[l]*t.angularFactor[l];if(t.angularDamping>0){let l=1/(1+n*t.angularDamping);for(let c=0;c<s;c+=1)t.L[c]*=l}T(t.invInertiaWorld,t.L,s,s,t.w),e.gyroscopic!==!1&&po(o,t,n,e)}function po(o,t,n,r){let{k:e}=o,i=r.gyroscopicIterations||1,s=G(t.R2,t.w,e,e),l=Float64Array.from(s),c=t.inertia;for(let u=0;u<i;u+=1){let y=T(c,l,e,e),x=Rt(o,l,y),m=new Float64Array(e);for(let v=0;v<e;v+=1){let A=0;for(let b=0;b<e;b+=1)A+=c[v*e+b]*(l[b]-s[b]);m[v]=A-n*x[v]}let h=it(o,y),a=it(o,l),p=O(a,c,e,e,e),w=I(e,e);for(let v=0;v<e*e;v+=1)w[v]=c[v]+n*h[v]-n*p[v];let g;try{g=$(w,e)}catch{break}let d=T(g,m,e,e),M=0;for(let v=0;v<e;v+=1)l[v]-=d[v],M+=d[v]*d[v];if(M<1e-24)break}T(t.R2,l,e,e,t.w);let f=T(c,l,e,e);T(t.R2,f,e,e,t.L)}function pt(o,t,n,r){if(t.isStatic||t.sleeping)return;let{n:e,r:i}=o;for(let f=0;f<e;f+=1)t.x[f]+=n*t.v[f];let s=new Float64Array(i);for(let f=0;f<o.k;f+=1)s[o.biSlot[f]]=t.w[f];let l=L(o,s,t.R);for(let f=0;f<i;f+=1)t.R[f]+=-.5*n*l[f];let c=r.rotorTolerance!==void 0?r.rotorTolerance:1e-9;if(Pt(o,t.R)>c){let f=Nt(o,t.R);t.R.set(f)}t.updateDerived()}var Ee=new WeakMap;function tt(o){let t=Ee.get(o);return t||(t={ua:new Float64Array(o.n),ub:new Float64Array(o.n),u:new Float64Array(o.n),j:new Float64Array(o.n),neg:new Float64Array(o.n),bi:new Float64Array(o.k),iv:new Float64Array(o.k)},Ee.set(o,t)),t}function mt(o,t,n,r,e){if(e||t.isStatic)return 0;let{k:i}=o,s=tt(o),l=Bt(o,n,r,s.bi),c=T(t.invInertiaWorld,l,i,i,s.iv),f=t.invMass;for(let u=0;u<i;u+=1)f+=c[u]*l[u];return f}function zt(o,t,n){let{n:r}=o,e=tt(o),i=t.a.pointVelocity(t.rA,e.ua),s=t.b.pointVelocity(t.rB,e.ub),l=n||e.u;for(let c=0;c<r;c+=1)l[c]=s[c]-i[c];return l}function yt(o,t,n,r,e=!1,i=!1){let{n:s}=o;for(let x=0;x<s;x+=1)t.rA[x]=t.point[x]-t.a.x[x],t.rB[x]=t.point[x]-t.b.x[x];t.aStatic=e,t.bStatic=i,t.kn=mt(o,t.a,t.rA,t.normal,e)+mt(o,t.b,t.rB,t.normal,i),t.tangents=ft(o,t.normal),t.kt=t.tangents.map(x=>mt(o,t.a,t.rA,x,e)+mt(o,t.b,t.rB,x,i)),(!t.tangentImpulse||t.tangentImpulse.length!==t.tangents.length)&&(t.tangentImpulse=new Float64Array(t.tangents.length));let l=zt(o,t),c=0;for(let x=0;x<s;x+=1)c+=l[x]*t.normal[x];t.vnInitial=c;let f=r.penetrationSlop,u=r.biasFactor,y=Math.min(t.a.restitution,t.b.restitution);if(t.friction=Math.sqrt(t.a.friction*t.b.friction),t.depth<0)t.target=t.depth/n;else{let x=u*Math.max(0,t.depth-f)/n;c<-r.restitutionThreshold&&(x+=-y*c),t.target=x}}function Zt(o,t,n){let{n:r}=o;if(!t.aStatic){let e=tt(o).neg;for(let i=0;i<r;i+=1)e[i]=-n[i];t.a.applyImpulse(e,t.rA)}t.bStatic||t.b.applyImpulse(n,t.rB)}function Xt(o,t){let{n}=o,r=tt(o).j;if(t.depth<0){t.normalImpulse=0,t.tangentImpulse.fill(0);return}if(t.normalImpulse===0&&!t.tangentImpulse.some(i=>i!==0))return;let e=r;for(let i=0;i<n;i+=1)e[i]=t.normal[i]*t.normalImpulse;for(let i=0;i<t.tangents.length;i+=1){let s=t.tangents[i],l=t.tangentImpulse[i];for(let c=0;c<n;c+=1)e[c]+=s[c]*l}Zt(o,t,e)}var Oe=new WeakMap;function et(o,t){let{n}=o,r=tt(o).j;if(r.fill(0),t.kn>0){let f=zt(o,t),u=0;for(let m=0;m<n;m+=1)u+=f[m]*t.normal[m];let y=-(u-t.target)/t.kn,x=t.normalImpulse;if(t.normalImpulse=Math.max(0,x+y),y=t.normalImpulse-x,y!==0){for(let m=0;m<n;m+=1)r[m]=t.normal[m]*y;Zt(o,t,r)}}let e=t.friction*t.normalImpulse,i=zt(o,t),s=Oe.get(t);(!s||s.length!==t.tangents.length)&&(s=new Float64Array(t.tangents.length),Oe.set(t,s));for(let f=0;f<t.tangents.length;f+=1){if(t.kt[f]<=0){s[f]=t.tangentImpulse[f];continue}let u=0;for(let y=0;y<n;y+=1)u+=i[y]*t.tangents[f][y];s[f]=t.tangentImpulse[f]-u/t.kt[f]}let l=0;for(let f=0;f<s.length;f+=1)l+=s[f]*s[f];if(l=Math.sqrt(l),l>e&&l>0){let f=e/l;for(let u=0;u<s.length;u+=1)s[u]*=f}r.fill(0);let c=!1;for(let f=0;f<s.length;f+=1){let u=s[f]-t.tangentImpulse[f];if(t.tangentImpulse[f]=s[f],u!==0){c=!0;for(let y=0;y<n;y+=1)r[y]+=t.tangents[f][y]*u}}c&&Zt(o,t,r)}function Yt(o,t){let n=new Map;for(let i of o)i.level=i.isStatic?0:1/0,n.set(i,[]);for(let i of t)n.get(i.a).push(i.b),n.get(i.b).push(i.a);let r=o.filter(i=>i.isStatic),e=0;for(;e<r.length;){let i=r[e];e+=1;for(let s of n.get(i)||[])s.level>i.level+1&&(s.level=i.level+1,r.push(s))}for(let i of o)Number.isFinite(i.level)||(i.level=0)}function Jt(o,t,n,r){let e=t.slice().sort((i,s)=>Math.min(i.a.level,i.b.level)-Math.min(s.a.level,s.b.level));for(let i of e){let s=i.a.level<=i.b.level;yt(o,i,n,r,s,!s),i.normalImpulse=0,i.tangentImpulse.fill(0);for(let l=0;l<r.shockIterations;l+=1)et(o,i)}}var Ut={fixedTimeStep:1/60,subSteps:1,iterations:10,shockIterations:2,useShockPropagation:!0,useWarmStart:!0,penetrationSlop:.005,biasFactor:.2,contactMargin:.02,restitutionThreshold:.5,maxContacts:0,rotorTolerance:1e-9,gyroscopic:!0,gyroscopicIterations:1,allowSleep:!0,sleepLinearVelocity:.03,sleepAngularVelocity:.03,sleepTime:.6},X=class{constructor(t={}){let n=t.dimensions||3;this.D=R(n),this.n=n,this.params=Object.assign({},Ut,t.params||{}),this.params.maxContacts||(this.params.maxContacts=1<<n-1),this.gravity=new Float64Array(n),t.gravity?this.gravity.set(t.gravity):this.gravity[1]=-9.81,this.bodies=[],this.contacts=[],this.manifolds=new Map,this.time=0,this.listeners={collision:[]}}addBody(t){return this.bodies.push(t),t}removeBody(t){let n=this.bodies.indexOf(t);n>=0&&this.bodies.splice(n,1)}createBody(t){return this.addBody(new j(this.D,t))}setGravity(t){this.gravity.set(t);for(let n of this.bodies)n.wake()}on(t,n){(this.listeners[t]=this.listeners[t]||[]).push(n)}emit(t,...n){for(let r of this.listeners[t]||[])r(...n)}broadPhase(){let{n:t}=this,n=this.params.contactMargin,r=[];for(let i of this.bodies){let s=i.aabb(n);r.push({b:i,min:s.min,max:s.max})}r.sort((i,s)=>i.min[0]-s.min[0]);let e=[];for(let i=0;i<r.length;i+=1)for(let s=i+1;s<r.length&&!(r[s].min[0]>r[i].max[0]);s+=1){let l=r[i],c=r[s];if(l.b.isStatic&&c.b.isStatic||l.b.sleeping&&c.b.sleeping||l.b.sleeping&&c.b.isStatic||c.b.sleeping&&l.b.isStatic)continue;let f=!0;for(let u=1;u<t;u+=1)if(l.min[u]>c.max[u]||c.min[u]>l.max[u]){f=!1;break}f&&e.push([l.b,c.b])}return e}narrowPhase(t){let n=[];for(let[r,e]of t)ut(this.D,r,e,n,this.params);return n}applyWarmStartCache(t){let{n}=this,r=new Map;for(let e of t){let i=`${e.a.id}:${e.b.id}`,s=this.manifolds.get(i);if(s){let l=null,c=.01*.01;for(let f of s){let u=0;for(let y=0;y<n;y+=1){let x=f.point[y]-e.point[y];u+=x*x}u<c&&(c=u,l=f)}l&&(e.normalImpulse=l.normalImpulse,e.oldTangent=l.tangentImpulse)}r.has(i)||r.set(i,[]),r.get(i).push(e)}this.manifolds=r}step(t){let{D:n,params:r}=this,e=Math.max(1,r.subSteps|0),i=t/e;for(let s=0;s<e;s+=1)this.subStep(i);for(let s of this.bodies)s.clearForces()}subStep(t){let{D:n,params:r}=this;for(let s of this.bodies)ht(n,s,t,this.gravity,r);let e=this.broadPhase(),i=this.narrowPhase(e);this.contacts=i;for(let s of i)s.depth>0&&(!s.a.isStatic&&s.b.sleeping===!1&&s.a.wake(),!s.b.isStatic&&s.a.sleeping===!1&&s.b.wake(),this.emit("collision",s.a,s.b,s));r.useWarmStart&&this.applyWarmStartCache(i);for(let s of i)yt(n,s,t,r);if(r.useWarmStart)for(let s of i)s.oldTangent&&s.oldTangent.length===s.tangentImpulse.length&&s.tangentImpulse.set(s.oldTangent),Xt(n,s);for(let s=0;s<r.iterations;s+=1)if((s&1)===0)for(let l=0;l<i.length;l+=1)et(n,i[l]);else for(let l=i.length-1;l>=0;l-=1)et(n,i[l]);r.useShockPropagation&&i.length>0&&(Yt(this.bodies,i),Jt(n,i,t,r));for(let s of this.bodies)pt(n,s,t,r);r.allowSleep&&this.updateSleep(t),this.time+=t}updateSleep(t){let{n,k:r}=this.D,e=this.params.sleepLinearVelocity**2,i=this.params.sleepAngularVelocity**2;for(let s of this.bodies){if(s.isStatic||!s.allowSleep)continue;let l=0;for(let f=0;f<n;f+=1)l+=s.v[f]*s.v[f];let c=0;for(let f=0;f<r;f+=1)c+=s.w[f]*s.w[f];l<e&&c<i?(s.sleepTimer+=t,s.sleepTimer>this.params.sleepTime&&(s.sleeping=!0,s.v.fill(0),s.L.fill(0),s.w.fill(0))):(s.sleepTimer=0,s.sleeping=!1)}}totalEnergy(){let t=0;for(let n of this.bodies)if(!n.isStatic){t+=n.kineticEnergy();for(let r=0;r<this.n;r+=1)t-=n.mass*this.gravity[r]*n.x[r]}return t}};var ne={};Y(ne,{sliceHyperSphereRadius:()=>ee,sliceTetrahedra:()=>te,sliceTorusMinorRadius:()=>oe,torusSliceTriangles:()=>re,transformVertices:()=>Dt});function Dt(o,t,n,r){let e=o.length/4,i=r&&r.length===o.length?r:new Float64Array(o.length);for(let s=0;s<e;s+=1){let l=s*4;for(let c=0;c<4;c+=1){let f=n[c];for(let u=0;u<4;u+=1)f+=t[c*4+u]*o[l+u];i[l+c]=f}}return i}var mo=[new Float64Array(3),new Float64Array(3),new Float64Array(3),new Float64Array(3)];function te(o,t,n,r){let e=t.length/4,i=r||{positions:[],normals:[]},s=i.positions,l=i.normals,c=new Float64Array(4),f=new Int32Array(4),u=[],y=[],x=[];for(let m=0;m<e;m+=1){u.length=0,y.length=0;for(let a=0;a<4;a+=1)f[a]=t[m*4+a],c[a]=o[f[a]*4+3]-n,c[a]>=0?u.push(a):y.push(a);if(u.length===0||y.length===0)continue;x.length=0;let h=(a,p)=>{let w=f[a]*4,g=f[p]*4,d=c[a]/(c[a]-c[p]),M=mo[x.length];for(let v=0;v<3;v+=1)M[v]=o[w+v]+d*(o[g+v]-o[w+v]);x.push(M)};if(u.length===1||y.length===1){let a=u.length===1?u[0]:y[0],p=u.length===1?y:u;h(a,p[0]),h(a,p[1]),h(a,p[2]),Qt(s,l,x[0],x[1],x[2])}else{let[a,p]=u,[w,g]=y;h(a,w),h(a,g),h(p,g),h(p,w),Qt(s,l,x[0],x[1],x[2]),Qt(s,l,x[0],x[2],x[3])}}return i}function Qt(o,t,n,r,e){let i=r[0]-n[0],s=r[1]-n[1],l=r[2]-n[2],c=e[0]-n[0],f=e[1]-n[1],u=e[2]-n[2],y=s*u-l*f,x=l*c-i*u,m=i*f-s*c,h=Math.hypot(y,x,m);h<1e-12||(y/=h,x/=h,m/=h,o.push(n[0],n[1],n[2],r[0],r[1],r[2],e[0],e[1],e[2]),t.push(y,x,m,y,x,m,y,x,m))}function ee(o,t,n){let r=n-t,e=o*o-r*r;return e>0?Math.sqrt(e):-1}function oe(o,t,n){let r=n-t,e=o*o-r*r;return e>0?Math.sqrt(e):-1}function re(o,t,n,r,e,i,s){let[l,c]=t.plane,f=t.otherAxes[0]===3?t.otherAxes[1]:t.otherAxes[0],u=t.majorRadius,y=i,x=s&&s[0]||40,m=s&&s[1]||20,a=x*m*2*9;(!o.buf||o.buf.length<a)&&(o.buf=new Float32Array(a),o.nbuf=new Float32Array(a));let p=o.buf,w=o.nbuf,g=new Float64Array(4),d=new Float64Array(4),M=new Float64Array(3),v=new Float64Array(3),A=(F,S,k,N,C)=>{let q=2*Math.PI*F/x,se=2*Math.PI*S/m,dt=Math.cos(se),ie=Math.sin(se),le=Math.cos(q),ae=Math.sin(q),ce=u+y*dt;g[0]=0,g[1]=0,g[2]=0,g[3]=e,g[l]=ce*le,g[c]=ce*ae,g[f]=y*ie,d[0]=0,d[1]=0,d[2]=0,d[3]=0,d[l]=dt*le,d[c]=dt*ae,d[f]=ie;for(let W=0;W<3;W+=1){let fe=r[W],ue=0;for(let E=0;E<4;E+=1)fe+=n[W*4+E]*g[E],ue+=n[W*4+E]*d[E];k[C+W]=fe,N[C+W]=ue}},b=0;for(let F=0;F<x;F+=1)for(let S=0;S<m;S+=1)A(F,S,p,w,b),A(F+1,S,p,w,b+3),A(F+1,S+1,p,w,b+6),A(F,S,p,w,b+9),A(F+1,S+1,p,w,b+12),A(F,S+1,p,w,b+15),b+=18;return o.positions=p.subarray(0,a),o.normals=w.subarray(0,a),o}var ot={WORLDREPORT:0,COLLISIONREPORT:1};function Ge(o){let t=null,n=null,r=0,e=0,i=null,s=null,l=new Map,c=[],f=1/60;function u(h){switch(h.type){case"box":return Vt(n,h.halfExtents);case"sphere":return jt(n,h.radius);case"halfspace":return qt(n,h.normal,h.offset||0);case"torus":return Gt(n,h.majorRadius,h.minorRadius,h.plane||[0,1]);case"convex":return Wt(n,h.vertices,h.cells);default:throw new Error(`workerCore: the shape "${h.type}" is not known`)}}function y(){let{n:h,k:a,r:p}=n,w=t.bodies,g=2+w.length*r;(!i||i.length<g)&&(i=new Float32Array(g)),i[0]=ot.WORLDREPORT,i[1]=w.length;let d=2;for(let M of w){i[d]=M.id,d+=1;for(let v=0;v<h;v+=1)i[d+v]=M.x[v];d+=h;for(let v=0;v<p;v+=1)i[d+v]=M.R[v];d+=p;for(let v=0;v<h;v+=1)i[d+v]=M.v[v];d+=h;for(let v=0;v<a;v+=1)i[d+v]=M.w[v];d+=a}o(i.subarray(0,g))}function x(){let{n:h}=n;if(c.length===0){c.length=0;return}let a=2+c.length*e;(!s||s.length<a)&&(s=new Float32Array(a)),s[0]=ot.COLLISIONREPORT,s[1]=c.length;let p=2;for(let w of c){s[p]=w.a.id,s[p+1]=w.b.id,p+=2;for(let g=0;g<h;g+=1)s[p+g]=w.normal[g];p+=h;for(let g=0;g<h;g+=1)s[p+g]=w.point[g];p+=h,s[p]=w.depth,p+=1}c.length=0,o(s.subarray(0,a))}let m={init(h){t=new X({dimensions:h.dimensions||3,gravity:h.gravity,params:h.params}),n=t.D,r=1+n.n+n.r+n.n+n.k,e=2+n.n+n.n+1,f=h.params&&h.params.fixedTimeStep||1/60;let a=new Set;t.on("collision",(p,w,g)=>{let d=`${p.id}:${w.id}`;a.has(d)||(a.add(d),c.push(g))}),t.on("stepStart",()=>a.clear()),o({cmd:"worldReady"})},addBody(h){let a=new j(n,{id:h.id,shape:u(h.shape),mass:h.mass,position:h.position,rotor:h.rotor,velocity:h.velocity,angularVelocity:h.angularVelocity,friction:h.friction,restitution:h.restitution,linearDamping:h.linearDamping,angularDamping:h.angularDamping,linearFactor:h.linearFactor,angularFactor:h.angularFactor,allowSleep:h.allowSleep});l.set(h.id,a),t.addBody(a),o({cmd:"objectReady",params:h.id})},removeBody(h){let a=l.get(h.id);a&&(t.removeBody(a),l.delete(h.id))},updateTransform(h){let a=l.get(h.id);a&&(h.position&&a.x.set(h.position),h.rotor&&a.R.set(h.rotor),a.updateDerived(),a.wake())},setGravity(h){t.setGravity(h)},setFixedTimeStep(h){f=h},setParams(h){Object.assign(t.params,h)},setLinearVelocity(h){let a=l.get(h.id);a&&a.setLinearVelocity(h.value)},setAngularVelocity(h){let a=l.get(h.id);a&&(a.setAngularVelocity(h.value),a.wake())},applyCentralImpulse(h){let a=l.get(h.id);a&&a.applyCentralImpulse(h.value)},applyImpulse(h){let a=l.get(h.id);a&&a.applyImpulse(h.value,h.offset)},applyCentralForce(h){let a=l.get(h.id);a&&a.applyCentralForce(h.value)},applyForce(h){let a=l.get(h.id);a&&a.applyForce(h.value,h.offset)},applyTorque(h){let a=l.get(h.id);a&&a.applyTorque(h.value)},setMass(h){let a=l.get(h.id);if(!a)return;let p={shape:a.shape,mass:h.value},w=new j(n,Object.assign({id:a.id},p));w.x.set(a.x),w.R.set(a.R),w.v.set(a.v),w.updateDerived(),t.removeBody(a),t.addBody(w),l.set(a.id,w)},simulate(h){let a=h&&h.timeStep?h.timeStep:f,p=h&&h.maxSubSteps||1,w=a/p;for(let g=0;g<p;g+=1)t.emit("stepStart"),t.step(w);y(),x()}};return{get world(){return t},handle(h){if(!h||!h.cmd)return;let a=m[h.cmd];if(!a){o({cmd:"unknown",params:h.cmd});return}a(h.params)}}}function He(o){if(!o)throw new Error("PhysiN: give the THREE namespace");let t={};t.scripts={worker:null},t.version="0.1.0",t.nd=Kt,t.slice=ne;let n=0;function r(){this._eventListeners={}}r.prototype.addEventListener=function(a,p){(this._eventListeners[a]=this._eventListeners[a]||[]).push(p)},r.prototype.removeEventListener=function(a,p){let w=this._eventListeners[a];if(!w)return!1;let g=w.indexOf(p);return g<0?!1:(w.splice(g,1),!0)},r.prototype.dispatchEvent=function(a,...p){let w=this._eventListeners[a];if(w)for(let g of w.slice())g.apply(this,p)},r.make=function(a){a.prototype.addEventListener=r.prototype.addEventListener,a.prototype.removeEventListener=r.prototype.removeEventListener,a.prototype.dispatchEvent=r.prototype.dispatchEvent},t.Eventable=r,t.createMaterial=function(a,p,w){let g=a.clone();return g._physiN={friction:p===void 0?.5:p,restitution:w===void 0?.1:w},g};function e(a){let p=new Array(a).fill(0);return p[1]=-9.81,p}let i=new o.Matrix4;function s(a,p,w){let g=0,d=0,M=0,v=w/3;for(let b=0;b<w;b+=3)g+=p[b],d+=p[b+1],M+=p[b+2];g/=v,d/=v,M/=v;let A=0;for(let b=0;b<w;b+=3){let F=p[b]-g,S=p[b+1]-d,k=p[b+2]-M,N=F*F+S*S+k*k;N>A&&(A=N)}a.boundingSphere||(a.boundingSphere=new o.Sphere),a.boundingSphere.center.set(g,d,M),a.boundingSphere.radius=Math.sqrt(A)}t.Scene=class extends o.Scene{constructor(p={}){super(),r.call(this);let w=this;this._n=p.dimensions||3,this._D=R(this._n),this._objects={},this._isSimulating=!1,this._stride=1+this._D.n+this._D.r+this._D.n+this._D.k,this._contactStride=2+this._D.n+this._D.n+1,this.sliceW=p.sliceW||0;let g=d=>w._onMessage(d);t.scripts.worker?(this._worker=new Worker(t.scripts.worker,{type:p.workerType||"classic"}),this._worker.onmessage=d=>g(d.data),this._post=(d,M)=>w._worker.postMessage(d,M||[])):(this._engine=Ge(d=>g(d)),this._post=d=>w._engine.handle(d)),this.execute("init",{dimensions:this._n,gravity:p.gravity||e(this._n),params:p.params||{}})}},r.make(t.Scene),t.Scene.prototype.execute=function(a,p){this._post({cmd:a,params:p})},t.Scene.prototype._onMessage=function(a){if(a instanceof Float32Array||a&&a.buffer&&a.BYTES_PER_ELEMENT===4){a[0]===ot.WORLDREPORT?this._updateScene(a):a[0]===ot.COLLISIONREPORT&&this._updateCollisions(a);return}let p=w=>typeof queueMicrotask=="function"?queueMicrotask(w):setTimeout(w,0);if(a&&a.cmd==="worldReady"){p(()=>this.dispatchEvent("ready"));return}a&&a.cmd==="objectReady"&&p(()=>{let w=this._objects[a.params];w&&w.dispatchEvent("ready")})},t.Scene.prototype._updateScene=function(a){let{n:p,k:w,r:g}=this._D,d=a[1];for(let M=0;M<d;M+=1){let v=2+M*this._stride,A=a[v];v+=1;let b=this._objects[A];if(!b)continue;let F=b._physiN;for(let S=0;S<p;S+=1)F.position[S]=a[v+S];v+=p;for(let S=0;S<g;S+=1)F.rotor[S]=a[v+S];v+=g;for(let S=0;S<p;S+=1)F.velocity[S]=a[v+S];v+=p;for(let S=0;S<w;S+=1)F.angularVelocity[S]=a[v+S];this._placeObject(b)}this._isSimulating=!1,this.dispatchEvent("update")},t.Scene.prototype._updateCollisions=function(a){let{n:p}=this._D,w=a[1];for(let g=0;g<w;g+=1){let d=2+g*this._contactStride,M=this._objects[a[d]],v=this._objects[a[d+1]];if(!M||!v)continue;let A=Array.from(a.subarray(d+2,d+2+p)),b=Array.from(a.subarray(d+2+p,d+2+2*p)),F=a[d+2+2*p];M.dispatchEvent("collision",v,A,b,F),v.dispatchEvent("collision",M,A.map(S=>-S),b,F)}},t.Scene.prototype._placeObject=function(a){let{n:p}=this._D,w=a._physiN;if(p===3){a.position.set(w.position[0],w.position[1],w.position[2]);let g=V(this._D,w.rotor,w.matrix);i.set(g[0],g[1],g[2],0,g[3],g[4],g[5],0,g[6],g[7],g[8],0,0,0,0,1),a.quaternion.setFromRotationMatrix(i);return}if(p===4){this._sliceObject(a);return}a.position.set(w.position[0],w.position[1],w.position[2])},t.Scene.prototype._sliceObject=function(a){let p=a._physiN,w=this._D;if(p.shape.type==="sphere"){let M=ee(p.shape.radius,p.position[3],this.sliceW);if(M<0){a.visible=!1;return}a.visible=!0,a.position.set(p.position[0],p.position[1],p.position[2]),a.scale.setScalar(M);return}if(p.shape.type==="halfspace"){a.visible=!0;return}if(p.shape.type==="torus"&&(c(w,p)||!p.mesh)){let M=oe(p.shape.minorRadius,p.position[3],this.sliceW);if(M<=0){a.visible=!1;return}let v=V(w,p.rotor,p.matrix);p.sink=re(p.sink||{},p.shape,v,p.position,this.sliceW-p.position[3],M,p.sliceSegments),a.visible=!0,a.position.set(0,0,0),a.quaternion.set(0,0,0,1),f(a,p.sink);return}if(!p.mesh){a.visible=!1;return}let g=V(w,p.rotor,p.matrix);p.world=Dt(p.mesh.vertices,g,p.position,p.world);let d={positions:[],normals:[]};if(te(p.world,p.mesh.cells,this.sliceW,d),d.positions.length===0){a.visible=!1;return}a.visible=!0,a.position.set(0,0,0),a.quaternion.set(0,0,0,1),f(a,d)};let l=!1;function c(a,p){let w=p.shape.plane;if(w[0]>2||w[1]>2)return!1;let g=V(a,p.rotor,p.matrix);return Math.abs(g[15]-1)<1e-6?!0:(!p.mesh&&!l&&(l=!0,typeof console<"u"&&console.warn&&console.warn("PhysiN: this torus turns out of the slice, and it has no mesh. The display is not exact. Build it with { mesh: true }.")),!1)}function f(a,p){let w=p.positions.length,g=a.geometry,d=g.getAttribute("position");if(!d||d.array.length<w){let M=Math.ceil(Math.max(w,192)/192)*192;g.setAttribute("position",new o.BufferAttribute(new Float32Array(M),3)),g.setAttribute("normal",new o.BufferAttribute(new Float32Array(M),3)),d=g.getAttribute("position")}d.array.set(p.positions),g.getAttribute("normal").array.set(p.normals),d.needsUpdate=!0,g.getAttribute("normal").needsUpdate=!0,g.setDrawRange(0,w/3),s(g,p.positions,w)}t.Scene.prototype.refreshSlice=function(){for(let a in this._objects)Object.prototype.hasOwnProperty.call(this._objects,a)&&this._placeObject(this._objects[a])},t.Scene.prototype.add=function(a){if(o.Scene.prototype.add.call(this,a),!a._physiN)return;let p=a._physiN;this._objects[p.id]=a,this.execute("addBody",{id:p.id,shape:p.shape,mass:p.mass,position:Array.from(p.position),rotor:Array.from(p.rotor),friction:p.friction,restitution:p.restitution,linearDamping:p.linearDamping,angularDamping:p.angularDamping,allowSleep:p.allowSleep})},t.Scene.prototype.remove=function(a){o.Scene.prototype.remove.call(this,a),a._physiN&&(delete this._objects[a._physiN.id],this.execute("removeBody",{id:a._physiN.id}))},t.Scene.prototype.setGravity=function(a){this.execute("setGravity",a)},t.Scene.prototype.setFixedTimeStep=function(a){this.execute("setFixedTimeStep",a)},t.Scene.prototype.setSolverParams=function(a){this.execute("setParams",a)},t.Scene.prototype.simulate=function(a,p){if(this._isSimulating)return!1;this._isSimulating=!0;for(let w in this._objects){if(!Object.prototype.hasOwnProperty.call(this._objects,w))continue;let d=this._objects[w]._physiN;d.dirty&&(this.execute("updateTransform",{id:d.id,position:Array.from(d.position),rotor:Array.from(d.rotor)}),d.dirty=!1)}return this.execute("simulate",{timeStep:a,maxSubSteps:p}),!0};function u(a,p,w,g){let d=p.n,M=R(d),v=g&&g._physiN||{};return a._physiN={id:n++,shape:p,mass:w===void 0?1:w,position:new Float64Array(d),rotor:P(M),velocity:new Float64Array(d),angularVelocity:new Float64Array(M.k),matrix:new Float64Array(d*d),friction:v.friction,restitution:v.restitution,linearDamping:0,angularDamping:0,allowSleep:!0,dirty:!1,mesh:null,world:null,D:M},a._physiN}t.Mesh=class extends o.Mesh{constructor(p,w,g,d){super(p,w),r.call(this),u(this,d,g,w),this.castShadow=!0,this.receiveShadow=!0}},r.make(t.Mesh),t.Mesh.prototype.setPositionN=function(a){this._physiN.position.set(a),this._physiN.dirty=!0},t.Mesh.prototype.getPositionN=function(){return this._physiN.position},t.Mesh.prototype.getRotor=function(){return this._physiN.rotor},t.Mesh.prototype.rotateInPlane=function(a,p,w){let g=this._physiN.D,d=kt(g,a,p,w);this._physiN.rotor.set(L(g,d,this._physiN.rotor)),this._physiN.dirty=!0};function y(a){return function(p,w){!this.parent||!this.parent.execute||this.parent.execute(a,{id:this._physiN.id,value:Array.from(p),offset:w?Array.from(w):void 0})}}t.Mesh.prototype.applyCentralImpulse=y("applyCentralImpulse"),t.Mesh.prototype.applyImpulse=y("applyImpulse"),t.Mesh.prototype.applyCentralForce=y("applyCentralForce"),t.Mesh.prototype.applyForce=y("applyForce"),t.Mesh.prototype.applyTorque=y("applyTorque"),t.Mesh.prototype.setLinearVelocity=y("setLinearVelocity"),t.Mesh.prototype.setAngularVelocity=y("setAngularVelocity"),t.Mesh.prototype.getLinearVelocity=function(){return this._physiN.velocity},t.Mesh.prototype.getAngularVelocity=function(){return this._physiN.angularVelocity},t.BoxMesh=class extends t.Mesh{constructor(p,w,g){p.computeBoundingBox();let d=p.boundingBox;super(p,w,g,{type:"box",n:3,halfExtents:[(d.max.x-d.min.x)/2,(d.max.y-d.min.y)/2,(d.max.z-d.min.z)/2]})}},t.SphereMesh=class extends t.Mesh{constructor(p,w,g){p.computeBoundingSphere(),super(p,w,g,{type:"sphere",n:3,radius:p.boundingSphere.radius})}},t.PlaneMesh=class extends t.Mesh{constructor(p,w,g,d){super(p,w,0,{type:"halfspace",n:3,normal:g||[0,1,0],offset:d||0})}};let x=o.SphereGeometry||o.SphereBufferGeometry;function m(){let a=new o.BufferGeometry;return a.setAttribute("position",new o.Float32BufferAttribute([],3)),a.setAttribute("normal",new o.Float32BufferAttribute([],3)),a}t.HyperBoxMesh=class extends t.Mesh{constructor(p,w,g){let d=p.length;super(m(),w,g,{type:"box",n:d,halfExtents:Array.from(p)}),d===4&&(this._physiN.mesh=lt(R(4),Float64Array.from(p))),this.frustumCulled=!1}},t.HyperSphereMesh=class extends t.Mesh{constructor(p,w,g,d=24){super(new x(1,d,Math.max(2,d/2)),w,g,{type:"sphere",n:4,radius:p}),this.frustumCulled=!1}};function h(a){let p=a.getAttribute&&a.getAttribute("position");if(!p)throw new Error("PhysiN.ConvexMesh: the geometry has no position attribute");let w=p.array,g=a.index?a.index.array:null,d=g?g.length:w.length/3,M=new Map,v=[],A=[],b=F=>{let S=w[F*3],k=w[F*3+1],N=w[F*3+2],C=`${Math.round(S*1e5)},${Math.round(k*1e5)},${Math.round(N*1e5)}`,q=M.get(C);return q===void 0&&(q=v.length/3,v.push(S,k,N),M.set(C,q)),q};for(let F=0;F+2<d;F+=3){let S=b(g?g[F]:F),k=b(g?g[F+1]:F+1),N=b(g?g[F+2]:F+2);S===k||k===N||S===N||A.push(S,k,N)}return{vertices:v,cells:A}}return t.ConvexMesh=class extends t.Mesh{constructor(p,w,g){let{vertices:d,cells:M}=h(p);super(p,w,g,{type:"convex",n:3,vertices:d,cells:M})}},t.TorusMesh=class extends t.Mesh{constructor(p,w,g,d,M,v=[0,1]){super(p,w,g,{type:"torus",n:3,majorRadius:d,minorRadius:M,plane:[v[0],v[1]],otherAxes:[0,1,2].filter(A=>A!==v[0]&&A!==v[1])})}},t.HyperTorusMesh=class extends t.Mesh{constructor(p,w,g,d,M,v={}){let A=v.dimensions||4,b=[g[0],g[1]],F=[];for(let k=0;k<A;k+=1)k!==b[0]&&k!==b[1]&&F.push(k);super(m(),d,M,{type:"torus",n:A,majorRadius:p,minorRadius:w,plane:b,otherAxes:F}),(v.mesh===void 0||v.mesh)&&A===4&&(this._physiN.mesh=at(R(4),p,w,b,v.meshSegments||[12,6,8])),this._physiN.sliceSegments=v.sliceSegments||[40,20],this.frustumCulled=!1}},t.HyperPlaneMesh=class extends t.Mesh{constructor(p,w,g,d){super(d||m(),g,0,{type:"halfspace",n:p.length,normal:Array.from(p),offset:w}),this._physiN.mesh=null}},t.HyperMesh=class extends t.Mesh{constructor(p,w,g,d){super(m(),g,d,{type:"convex",n:4,vertices:Array.from(p),cells:Array.from(w)}),this._physiN.mesh={vertices:Float64Array.from(p),cells:Int32Array.from(w)},this.frustumCulled=!1}},t}typeof globalThis.THREE>"u"?console.error("PhysiN: load three.js before physiN.js"):globalThis.PhysiN=He(globalThis.THREE);})();
+
+</script>
+<script>
+if (typeof THREE === 'undefined' || typeof PhysiN === 'undefined') {
+  document.getElementById('fallback').style.display = 'grid';
+  document.getElementById('panel').style.display = 'none';
+  document.getElementById('ruler').style.display = 'none';
+} else {
+/* PhysiN sandbox — one page for n = 3 and n = 4.
+   It needs a global THREE (r128 or later) and a global PhysiN. */
+(function () {
+  'use strict';
+
+  PhysiN.scripts.worker = null;              // the artifact runs in the main thread
+
+  var PAPER = '#EDEFEA';
+  var W_MIN = -3, W_MAX = 3;
+
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.getElementById('stage').appendChild(renderer.domElement);
+
+  var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
+
+  // three.js r125 to r143 uses the names BoxBufferGeometry and
+  // SphereBufferGeometry. Accept the two names.
+  var BoxG = THREE.BoxGeometry || THREE.BoxBufferGeometry;
+  var SphereG = THREE.SphereGeometry || THREE.SphereBufferGeometry;
+
+  // ---- a small orbit control, because the artifact has no addons ----------
+  var orbit = { theta: 0.72, phi: 0.95, dist: 13, target: new THREE.Vector3(0, 1.5, 0) };
+  function placeCamera() {
+    var sp = Math.sin(orbit.phi);
+    camera.position.set(
+      orbit.target.x + orbit.dist * sp * Math.sin(orbit.theta),
+      orbit.target.y + orbit.dist * Math.cos(orbit.phi),
+      orbit.target.z + orbit.dist * sp * Math.cos(orbit.theta)
+    );
+    camera.lookAt(orbit.target);
+  }
+  var drag = null;
+  renderer.domElement.addEventListener('pointerdown', function (e) {
+    drag = { x: e.clientX, y: e.clientY };
+    renderer.domElement.setPointerCapture(e.pointerId);
+  });
+  renderer.domElement.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    orbit.theta -= (e.clientX - drag.x) * 0.008;
+    orbit.phi = Math.min(1.52, Math.max(0.12, orbit.phi - (e.clientY - drag.y) * 0.008));
+    drag.x = e.clientX; drag.y = e.clientY;
+    placeCamera();
+  });
+  renderer.domElement.addEventListener('pointerup', function () { drag = null; });
+  renderer.domElement.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    orbit.dist = Math.min(34, Math.max(5, orbit.dist * (1 + e.deltaY * 0.0012)));
+    placeCamera();
+  }, { passive: false });
+
+  // ---- materials ---------------------------------------------------------
+  function mat(color, extra) {
+    var o = { color: color, roughness: 0.5, metalness: 0.0 };
+    if (extra) for (var kx in extra) o[kx] = extra[kx];
+    var m = new THREE.MeshStandardMaterial(o);
+    m._physiN = { friction: 0.7, restitution: 0.05 };
+    return m;
+  }
+  var matCube = mat('#2C6B6B', { flatShading: true, side: THREE.DoubleSide });
+  var matBall = mat('#7A1F3D');
+  var matFloor = mat('#D9DED7', { roughness: 0.95 });
+
+  // ---- the scene ---------------------------------------------------------
+  var scene = null, bodies = [], n = 4, sliceW = 0, tilted = false, paused = false;
+
+  function build(dim) {
+    n = dim;
+    sliceW = 0; tilted = false;
+    setPressed('tilt', false);
+    document.getElementById('ruler').style.display = (n === 4) ? 'block' : 'none';
+    document.getElementById('wlabel').style.display = (n === 4) ? 'block' : 'none';
+    document.getElementById('note4').style.display = (n === 4) ? 'block' : 'none';
+    document.getElementById('note3').style.display = (n === 3) ? 'block' : 'none';
+    document.getElementById('spin').textContent = (n === 4)
+      ? 'Torque in the (x w) plane' : 'Torque in the (x z) plane';
+    document.getElementById('tilt').style.display = (n === 4) ? 'block' : 'none';
+
+    var g = (n === 4) ? [0, -9.81, 0, 0] : [0, -9.81, 0];
+    scene = new PhysiN.Scene({ dimensions: n, gravity: g, params: { iterations: 12 } });
+    scene.background = new THREE.Color(PAPER);
+    scene.fog = new THREE.Fog(PAPER, 20, 52);
+    bodies = [];
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa79f, 0.85));
+    var sun = new THREE.DirectionalLight(0xfff6e8, 0.95);
+    sun.position.set(6, 13, 5);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.left = -12; sun.shadow.camera.right = 12;
+    sun.shadow.camera.top = 12; sun.shadow.camera.bottom = -12;
+    if (sun.shadow.camera.updateProjectionMatrix) sun.shadow.camera.updateProjectionMatrix();
+    scene.add(sun);
+
+    var floorGeom = new BoxG(26, 0.2, 26);
+    var floor = (n === 4)
+      ? new PhysiN.HyperPlaneMesh([0, 1, 0, 0], 0, matFloor, floorGeom)
+      : new PhysiN.PlaneMesh(floorGeom, matFloor, [0, 1, 0], 0);
+    floor.position.y = -0.1;
+    floor.castShadow = false;
+    scene.add(floor);
+    var grid = new THREE.GridHelper(26, 26, 0xb4beb6, 0xd3dad3);
+    grid.position.y = 0.002;
+    scene.add(grid);
+
+    for (var i = 0; i < 3; i += 1) addCube([0, 0.5 + i * 1.03, 0, 0]);
+    addBall([2.3, 3.6, 0, 0.6]);
+    placeCamera();
+  }
+
+  function addCube(p) {
+    var h = 0.5, m;
+    if (n === 4) {
+      m = new PhysiN.HyperBoxMesh([h, h, h, h], matCube, 1);
+      m.userData.wRadius = Math.sqrt(4 * h * h);
+    } else {
+      m = new PhysiN.BoxMesh(new BoxG(1, 1, 1), matCube, 1);
+    }
+    m.setPositionN(p.slice(0, n));
+    scene.add(m);
+    bodies.push(m);
+    return m;
+  }
+  function addBall(p, r) {
+    r = r || 0.45;
+    var m;
+    if (n === 4) {
+      m = new PhysiN.HyperSphereMesh(r, matBall, 1, 24);
+      m.userData.wRadius = r;
+    } else {
+      m = new PhysiN.SphereMesh(new SphereG(r, 24, 16), matBall, 1);
+    }
+    m.setPositionN(p.slice(0, n));
+    scene.add(m);
+    bodies.push(m);
+    return m;
+  }
+
+  // ---- buttons -----------------------------------------------------------
+  function rnd(a) { return (Math.random() - 0.5) * a; }
+  function setPressed(id, v) {
+    document.getElementById(id).setAttribute('aria-pressed', String(!!v));
+  }
+  function on(id, fn) { document.getElementById(id).addEventListener('click', fn); }
+
+  on('drop', function () {
+    var c = addCube([rnd(1.6), 7, rnd(1.6), rnd(1.2)]);
+    c.rotateInPlane(0, n - 1, Math.random() * 1.2);
+  });
+  on('dropBall', function () { addBall([rnd(2), 7, rnd(2), rnd(1.5)]); });
+  on('spin', function () {
+    // Bivector order, n = 4: xy xz xw yz yw zw. Index 2 is the (x w) plane.
+    // Bivector order, n = 3: xy xz yz.          Index 1 is the (x z) plane.
+    var t = (n === 4) ? [0, 0, 11, 0, 0, 0] : [0, 8, 0];
+    for (var i = 0; i < bodies.length; i += 1) {
+      if (bodies[i]._physiN.shape.type === 'box') bodies[i].applyTorque(t);
+    }
+  });
+  on('tilt', function () {
+    tilted = !tilted;
+    setPressed('tilt', tilted);
+    scene.setGravity(tilted ? [0, -9.3, 0, -3.0] : [0, -9.81, 0, 0]);
+  });
+  on('pause', function () {
+    paused = !paused;
+    setPressed('pause', paused);
+    document.getElementById('pause').textContent = paused ? 'Continue' : 'Pause';
+  });
+  on('reset', function () { build(n); });
+  on('dim3', function () { setDim(3); });
+  on('dim4', function () { setDim(4); });
+  function setDim(d) {
+    setPressed('dim3', d === 3);
+    setPressed('dim4', d === 4);
+    build(d);
+  }
+
+  // ---- the w ruler -------------------------------------------------------
+  var rulerBox = document.getElementById('ruler');
+  var rc = document.getElementById('rulerCanvas');
+  var ctx = rc.getContext('2d');
+  var wlabel = document.getElementById('wlabel');
+
+  function wToX(w, width) { return ((w - W_MIN) / (W_MAX - W_MIN)) * width; }
+
+  function drawRuler() {
+    var dpr = Math.min(window.devicePixelRatio, 2);
+    var width = rc.clientWidth, height = rc.clientHeight;
+    if (!width) return;
+    if (rc.width !== Math.round(width * dpr)) {
+      rc.width = Math.round(width * dpr); rc.height = Math.round(height * dpr);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    // One band for each body. It shows the interval of w that the body covers.
+    for (var i = 0; i < bodies.length; i += 1) {
+      var b = bodies[i];
+      var p = b.getPositionN();
+      var r = b.userData.wRadius;
+      var x0 = wToX(p[3] - r, width), x1 = wToX(p[3] + r, width);
+      var y = 13 + (i % 5) * 6;
+      var inside = (sliceW > p[3] - r && sliceW < p[3] + r);
+      ctx.fillStyle = inside
+        ? (b._physiN.shape.type === 'box' ? '#2C6B6B' : '#7A1F3D')
+        : '#CBD2CB';
+      ctx.fillRect(x0, y, Math.max(2, x1 - x0), 3);
+    }
+
+    ctx.strokeStyle = '#C6CDC5'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (var w = W_MIN; w <= W_MAX + 1e-9; w += 0.1) {
+      var x = Math.round(wToX(w, width)) + 0.5;
+      var unit = Math.abs(w - Math.round(w)) < 1e-6;
+      ctx.moveTo(x, height - 8);
+      ctx.lineTo(x, height - (unit ? 24 : 15));
+    }
+    ctx.stroke();
+    ctx.fillStyle = '#6B7A73';
+    ctx.font = '10px ui-monospace, Menlo, monospace';
+    ctx.textAlign = 'center';
+    for (var u = Math.ceil(W_MIN); u <= W_MAX; u += 1) {
+      ctx.fillText('w = ' + u, wToX(u, width), height - 29);
+    }
+
+    var cx = wToX(sliceW, width);
+    ctx.strokeStyle = '#7A1F3D'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cx, 6); ctx.lineTo(cx, height - 5); ctx.stroke();
+    ctx.fillStyle = '#7A1F3D';
+    ctx.beginPath();
+    ctx.moveTo(cx - 6, 6); ctx.lineTo(cx + 6, 6); ctx.lineTo(cx, 14);
+    ctx.closePath(); ctx.fill();
+
+    wlabel.style.left = cx + 'px';
+    wlabel.textContent = 'w = ' + sliceW.toFixed(2);
+  }
+
+  function pointerToW(e) {
+    var r = rc.getBoundingClientRect();
+    var t = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    return W_MIN + t * (W_MAX - W_MIN);
+  }
+  var rdrag = false;
+  rulerBox.addEventListener('pointerdown', function (e) {
+    rdrag = true; rulerBox.setPointerCapture(e.pointerId);
+    sliceW = pointerToW(e);
+  });
+  rulerBox.addEventListener('pointermove', function (e) {
+    if (rdrag) sliceW = pointerToW(e);
+  });
+  rulerBox.addEventListener('pointerup', function () { rdrag = false; });
+  window.addEventListener('keydown', function (e) {
+    if (n !== 4) return;
+    if (e.key === 'ArrowLeft') sliceW = Math.max(W_MIN, sliceW - 0.05);
+    else if (e.key === 'ArrowRight') sliceW = Math.min(W_MAX, sliceW + 0.05);
+  });
+
+  // ---- the loop ----------------------------------------------------------
+  function resize() {
+    var el = document.getElementById('stage');
+    var w = el.clientWidth, h = el.clientHeight;
+    if (!w || !h) return;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h, false);
+  }
+  window.addEventListener('resize', resize);
+
+  var stat = document.getElementById('stat');
+  var last = performance.now(), frames = 0, fps = 0;
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    frames += 1;
+    if (now - last > 500) {
+      fps = Math.round(frames * 1000 / (now - last)); frames = 0; last = now;
+    }
+    if (!paused) {
+      if (n === 4) scene.sliceW = sliceW;
+      scene.simulate(1 / 60, 1);
+    } else if (n === 4) {
+      scene.sliceW = sliceW;
+      scene.refreshSlice();
+    }
+    renderer.render(scene, camera);
+    if (n === 4) {
+      drawRuler();
+      var shown = 0;
+      for (var i = 0; i < bodies.length; i += 1) if (bodies[i].visible) shown += 1;
+      stat.textContent = bodies.length + ' bodies in 4D\n' + shown + ' cut by the slice\n'
+        + 'k = 6  r = 8\n' + fps + ' fps';
+    } else {
+      stat.textContent = bodies.length + ' bodies in 3D\nk = 3  r = 4\n' + fps + ' fps';
+    }
+  }
+
+  setDim(4);
+  resize();
+  requestAnimationFrame(frame);
+})();
+
+}
+</script>
+</body>
+</html>
