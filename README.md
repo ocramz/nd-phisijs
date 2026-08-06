@@ -14,8 +14,6 @@ ACM Transactions on Graphics 39(4), 2020.
 
 ## 0. What is in this repository
 
-This repository holds the built library, and not its source:
-
 | File | Content |
 |---|---|
 | `physin.js` | the three.js plugin. One classic script. It contains all of the library. |
@@ -26,8 +24,6 @@ This repository holds the built library, and not its source:
 | `test/worker.js` | the test of the two files and of the message protocol. |
 | `ND-PHYSICS.md` | the mathematics, in full. |
 
-The source tree `src/`, the build commands, and the other tests of the test
-plan are not in this repository. This README speaks only about the files above.
 
 ---
 
