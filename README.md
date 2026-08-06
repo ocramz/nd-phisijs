@@ -12,6 +12,25 @@ ACM Transactions on Graphics 39(4), 2020.
 
 ---
 
+## 0. What is in this repository
+
+This repository holds the built library, and not its source:
+
+| File | Content |
+|---|---|
+| `physin.js` | the three.js plugin. One classic script. It contains all of the library. |
+| `physin_worker.js` | the same engine, for a web worker. One classic worker script. |
+| `sandbox.html` | a page of bodies that fall, in 3 and in 4 dimensions. |
+| `donuts.html` | a page of two donuts that make a chain link. |
+| `plugin.html` | the five steps, on a page that loads the two files above. |
+| `test/worker.js` | the test of the two files and of the message protocol. |
+| `ND-PHYSICS.md` | the mathematics, in full. |
+
+The source tree `src/`, the build commands, and the other tests of the test
+plan are not in this repository. This README speaks only about the files above.
+
+---
+
 ## 1. What it does
 
 - Rigid body dynamics for `n = 2, 3, 4, 5, 6` or more.
@@ -26,27 +45,37 @@ ACM Transactions on Graphics 39(4), 2020.
 
 ## 2. Look at it first
 
-Two pages need no build. Each page is one file, and it gets three.js from a
-CDN. Open them in a browser.
+Three pages need no build, and no server. Each page gets three.js from a CDN.
+Open a page in a browser, directly from the disk.
 
-- `examples/sandbox.html` — bodies that fall, in 3 and in 4 dimensions.
-- `examples/plugin.html` — the five steps of the interface, with the two files.
-- `examples/link.html` — two donuts. Move one donut along `x` and along `w` to
+- `sandbox.html` — bodies that fall, in 3 and in 4 dimensions. A ruler at the
+  bottom of the screen moves the 3D hyperplane along the `w` axis.
+- `donuts.html` — two donuts. Move one donut along `x` and along `w` to
   make a chain link. You do not cut anything. In three dimensions this is not
   possible.
+- `plugin.html` — a stack of boxes, a ball that hits the stack, and an
+  octahedron. This page is the five steps of section 3, and it is short.
+
+`sandbox.html` and `donuts.html` each contain the engine, and each one sets
+`PhysiN.scripts.worker = null`. Thus they do the physics in the main thread.
+
+`plugin.html` is different: it loads `physin.js` with a `<script>` tag, from
+the same folder. Thus it shows how to put the library on your own page. A
+browser does not permit a worker from the disk. Thus the page uses the main
+thread for a `file:` address, and the worker if a server gives the page.
 
 ## 3. The two files, and the five steps
 
-The build gives two files. Put them on your page.
+Put these two files on your page.
 
 | File | Use |
 |---|---|
-| `dist/physiN.js` | the three.js plugin. One classic script. It contains all of the library. |
-| `dist/physiN_worker.js` | the same engine, for a web worker. One classic worker script. |
+| `physin.js` | the three.js plugin. One classic script. It contains all of the library. |
+| `physin_worker.js` | the same engine, for a web worker. One classic worker script. |
 
 The interface follows physi.js:
 
-1. Load three.js. Then load `physiN.js` with a `<script>` tag.
+1. Load three.js. Then load `physin.js` with a `<script>` tag.
 2. Point `PhysiN.scripts.worker` at the worker file.
 3. Use `PhysiN.Scene` in the place of `THREE.Scene`.
 4. Use `PhysiN.BoxMesh`, `PhysiN.SphereMesh`, `PhysiN.ConvexMesh`,
@@ -55,9 +84,9 @@ The interface follows physi.js:
 
 ```html
 <script src="three.min.js"></script>
-<script src="physiN.js"></script>
+<script src="physin.js"></script>
 <script>
-  PhysiN.scripts.worker = 'physiN_worker.js';   // null = the main thread
+  PhysiN.scripts.worker = 'physin_worker.js';   // null = the main thread
 
   var scene = new PhysiN.Scene({ dimensions: 3, gravity: [0, -9.81, 0] });
   scene.add(new PhysiN.PlaneMesh(groundGeometry, stone, [0, 1, 0], 0));
@@ -75,53 +104,51 @@ The interface follows physi.js:
 </script>
 ```
 
-The page `examples/plugin.html` gives these five steps in full.
+`plugin.html` is this code, as a page that operates.
 
-**Note on the worker.** The default worker type is `classic`, because the two
-files are classic scripts. Use the ES module build with
-`new PhysiN.Scene({ workerType: 'module' })`.
+**Note on the global.** `physin.js` is a classic script, and not an ES module.
+It has no exports. It puts `PhysiN` on the global object.
 
-## 4. Install
+**Note on the worker.** The default value of `PhysiN.scripts.worker` is `null`.
+Thus the physics operates in the main thread until you set that property. The
+default worker type is `classic`, because the two files are classic scripts.
+`new PhysiN.Scene({ workerType: 'module' })` selects a module worker, but you
+must then supply an ES module build. This repository does not contain one.
+
+## 4. Install and test
+
+The library has no dependencies, and it needs no build. The two files are the
+build.
 
 ```
-npm install
-npm test           # 59 tests
-npm run build      # makes the bundles in dist/
-npm run serve      # then open http://localhost:8080/examples/4d.html
+npm test          # 13 tests of the two files and the worker protocol
 ```
 
-You must use a web server for the examples. A browser does not load an ES
-module from a `file://` address.
+The example pages need no server. Open `sandbox.html`, `donuts.html` or
+`plugin.html` directly from the disk.
 
 ### The files
 
 ```
-src/nd/            the general library. It does not know about three.js.
-  core/            dimension tables, linear algebra
-  algebra/         multivector, rotor, star matrix
-  body/            mass properties, shapes, the body state
-  integrate/       the time step, the gyroscopic term, the rotor correction
-  detect/          collision detection, the separating axis theorem
-  resolve/         impulses, friction, the contact graph
-  world.js         the world, the broad phase, the loop
-  workerCore.js    the message protocol
-src/physiN.js      the three.js plugin
-src/slice/         the 4D slice, for the display
-examples/          browser pages. `sandbox.html` is one file, with no build.
-test/              the test plan
-dist/              the bundles
+physin.js          the three.js plugin, and all of the library
+physin_worker.js   the same engine, for a web worker
+sandbox.html       bodies that fall, in 3 and in 4 dimensions
+donuts.html        two donuts that make a chain link
+plugin.html        the five steps, on a page that loads the two files
+test/worker.js     the test of the two files and the worker protocol
+ND-PHYSICS.md      the mathematics, in full
+package.json       the test command
 ```
 
 ---
 
 ## 5. Quick start, 3 dimensions
 
-```js
-import * as THREE from 'three';
-import { createPhysiN } from 'physin';
+Load three.js and then `physin.js`, as in section 3. The two scripts give
+`THREE` and `PhysiN` as globals.
 
-const PhysiN = createPhysiN(THREE);
-PhysiN.scripts.worker = new URL('physin/src/physiN_worker.js', import.meta.url).href;
+```js
+PhysiN.scripts.worker = 'physin_worker.js';   // null = the main thread
 
 const scene = new PhysiN.Scene({ dimensions: 3, gravity: [0, -9.81, 0] });
 
@@ -170,7 +197,7 @@ Set `scene.sliceW` at each frame, or call `scene.refreshSlice()` after you
 change it. The mesh of each 4D body then changes to the new cut. If a body is
 not in the slice, PhysiN sets `visible = false`.
 
-The page `examples/4d.html` gives a ruler at the bottom of the screen. The
+The page `sandbox.html` gives a ruler at the bottom of the screen. The
 ruler shows the interval of `w` that each body covers. Drag the ruler to move
 the hyperplane. A body that the hyperplane cuts has a colored band.
 
@@ -179,15 +206,19 @@ the hyperplane. A body that the hyperplane cuts has a colored band.
 ## 7. The web worker
 
 ```js
-// Physics in a worker (the default):
-PhysiN.scripts.worker = new URL('../src/physiN_worker.js', import.meta.url).href;
+// Physics in a worker:
+PhysiN.scripts.worker = 'physin_worker.js';
 
-// Physics in the main thread:
+// Physics in the main thread (the default):
 PhysiN.scripts.worker = null;
 ```
 
-The same file `src/nd/workerCore.js` operates in both conditions. Thus the
-results are the same. Use the main thread to debug. Use the worker for a game.
+Give the address of `physin_worker.js` as the browser sees it. The plugin gives
+that value to `new Worker()` with no change.
+
+The two files contain the same engine code. Thus the results are the same in
+the two conditions. Use the main thread to debug. Use the worker for a game.
+`test/worker.js` compares the two conditions.
 
 The worker sends a `Float32Array` report at each step. The report has one
 record for each body. The record has this content:
@@ -204,7 +235,7 @@ id | position (n) | rotor (2^(n-1)) | linear velocity (n) | angular momentum (k)
 
 | Member | Description |
 |---|---|
-| `new PhysiN.Scene(params)` | `params`: `dimensions`, `gravity`, `sliceW`, `params` |
+| `new PhysiN.Scene(params)` | `params`: `dimensions`, `gravity`, `sliceW`, `workerType`, `params` |
 | `.add(object)` | Adds a mesh. A `THREE.Object3D` with no body is also correct. |
 | `.remove(object)` | Removes the mesh and its body. |
 | `.simulate(timeStep, maxSubSteps)` | Makes one step. |
@@ -227,8 +258,22 @@ id | position (n) | rotor (2^(n-1)) | linear velocity (n) | angular momentum (k)
 | `.applyCentralImpulse(j)`, `.applyImpulse(j, r)` | `j` has `n` components. |
 | `.applyCentralForce(f)`, `.applyForce(f, r)` | `f` has `n` components. |
 | `.applyTorque(t)` | `t` is a **bivector**. It has `k` components. |
-| `.setMass(m)` | A mass of 0 makes the body static. |
+| `.getLinearVelocity()`, `.getAngularVelocity()` | Give the last values from the engine. |
 | Events | `ready`, `collision` |
+
+`setPositionN` and `rotateInPlane` write into the mesh. Thus you can call them
+before `scene.add`. Each other method in the table is a command to the engine,
+and the mesh sends it through its parent. Thus you must call it **after**
+`scene.add`. A command that you send before `scene.add` goes away, and the
+library gives no message.
+
+`PhysiN.Mesh` has no `setMass` method. Give the mass to the constructor. A mass
+of 0 makes the body static. To change the mass after that, send the command to
+the engine:
+
+```js
+scene.execute('setMass', { id: mesh._physiN.id, value: 2 });
+```
 
 ### The shapes
 
@@ -370,7 +415,7 @@ The norm gives no warning. The energy increases without limit.
 
 PhysiN makes the frame of the rotor orthonormal, then it builds the rotor
 again as a product of simple rotors. The result is always a correct rotation.
-The correction is in `src/nd/algebra/rotor.js`, in the function `rotorCorrect`.
+The correction is the function `rotorCorrect`, and `PhysiN.nd.rotor` gives it.
 The integrator calls it when the defect is more than `rotorTolerance`.
 
 The gyroscopic term makes double rotations very frequently. Thus you cannot
@@ -380,11 +425,12 @@ remove this step from a 4D engine.
 
 ## 11. The library without three.js
 
-The directory `src/nd/` has no dependency. Use it for a server, for a test, or
-for a different renderer.
+`physin.js` gives the general library as `PhysiN.nd`. That part has no
+dependency on three.js. Use it for a server, for a test, or for a different
+renderer. `physin_worker.js` uses the same code.
 
 ```js
-import { World, HyperBox, HalfSpace, Body, dims } from 'physin/nd';
+const { World, HyperBox, HalfSpace, Body, dims } = PhysiN.nd;
 
 const D = dims(4);                       // the tables for n = 4
 const world = new World({ dimensions: 4, gravity: [0, -9.81, 0, 0] });
@@ -410,8 +456,8 @@ bivector, `k` numbers. `body.L` is the angular momentum bivector.
 
 ## 12. Tolerances
 
-All the tolerances are in one place: `defaultParams` in `src/nd/world.js`.
-Give new values in `new PhysiN.Scene({ params: { ... } })`.
+All the tolerances are in one place: `PhysiN.nd.defaultParams`. Give new values
+in `new PhysiN.Scene({ params: { ... } })`.
 
 | Name | Default | Use |
 |---|---|---|
@@ -423,8 +469,11 @@ Give new values in `new PhysiN.Scene({ params: { ... } })`.
 | `biasFactor` | 0.2 | the correction of the position error |
 | `contactMargin` | 0.02 | the distance that makes a contact |
 | `restitutionThreshold` | 0.5 | the minimum speed for a bounce |
+| `maxContacts` | 0 | the limit of the contact count. 0 = no limit |
 | `rotorTolerance` | 1e-9 | the limit of the rotor defect |
 | `gyroscopic` | true | set it to false to remove the gyroscopic term |
+| `gyroscopicIterations` | 1 | the iteration count of the implicit gyroscopic step |
+| `allowSleep` | true | set it to false to keep all the bodies awake |
 | `sleepLinearVelocity`, `sleepAngularVelocity`, `sleepTime` | 0.03, 0.03, 0.6 | the sleep limits |
 | `useShockPropagation`, `useWarmStart` | true | set to false to compare |
 
@@ -435,15 +484,21 @@ algebraic rule. Keep this separation if you change the code.
 
 ## 13. Tests
 
+This repository has one test file.
+
 ```
-node test/run.js       # 46 tests of the library
-node test/plugin.js    # 13 tests of the three.js plugin
-node test/artifact.js  # 15 tests of the sandbox page
-node test/link.js      # 14 tests of the chain link page
-node test/worker.js    # 13 tests of the two files and the worker protocol
+npm test               # the same as: node test/worker.js
 ```
 
-The tests follow the test plan in this order:
+`test/worker.js` gives 13 tests of the two files and of the message protocol.
+It reads `physin.js` and `physin_worker.js` from the disk. Then it connects
+them with a stub Worker. Thus it tests the protocol from end to end. It also
+compares the main thread with the worker: a box comes to rest at the same
+height in the two conditions. The last three tests use four dimensions, and
+they include the slice of a 4D torus.
+
+The other tests of the test plan operate on the source tree, and they are not
+in this repository. The full plan has this order:
 
 1. Algebra identities: `r ∧ a = [r]* a`, `r · w = [r]*ᵀ w`, `dI = [r]* [r]*ᵀ`,
    `[R]₂ B = R B R~`, for `n = 2` to `n = 6`.
@@ -460,7 +515,7 @@ The tests follow the test plan in this order:
     the nearest point on a simplex, and the contact with a hypersphere.
 
 The plugin tests use a small stub in the place of three.js. Thus they operate
-in Node, with no browser.
+in Node, with no browser. `test/worker.js` contains that stub.
 
 ### Known effect
 

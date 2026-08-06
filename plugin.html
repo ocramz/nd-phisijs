@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PhysiN — the five steps</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#EDEFEA}canvas{display:block}</style>
+</head>
+<body>
+
+<!-- 1. Load three.js, then load the one file of the plugin. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="physin.js"></script>
+
+<script>
+// 2. Point the plugin at the worker file. Use null for the main thread.
+// A browser does not permit a worker from the disk. Thus this page uses the
+// main thread for a "file:" address, and the worker if a server gives the page.
+PhysiN.scripts.worker = location.protocol === 'file:' ? null : 'physin_worker.js';
+
+var renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+var camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(9, 7, 11);
+camera.lookAt(0, 1.5, 0);
+
+// 3. Use PhysiN.Scene in the place of THREE.Scene.
+var scene = new PhysiN.Scene({ dimensions: 3, gravity: [0, -9.81, 0] });
+scene.background = new THREE.Color('#EDEFEA');
+scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa79f, 0.9));
+var sun = new THREE.DirectionalLight(0xfff6e8, 0.9);
+sun.position.set(6, 12, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+// The default limits of the shadow camera are +/-5. The ground is 40 wide.
+sun.shadow.camera.left = -12; sun.shadow.camera.right = 12;
+sun.shadow.camera.top = 12; sun.shadow.camera.bottom = -12;
+scene.add(sun);
+
+var stone = new THREE.MeshStandardMaterial({ color: '#D9DED7', roughness: 0.95 });
+var teal = new THREE.MeshStandardMaterial({ color: '#2C6B6B', roughness: 0.5 });
+var plum = new THREE.MeshStandardMaterial({ color: '#7A1F3D', roughness: 0.4 });
+// The friction and the restitution go on the material.
+stone._physiN = { friction: 0.8, restitution: 0.05 };
+teal._physiN = { friction: 0.6, restitution: 0.1 };
+plum._physiN = { friction: 0.4, restitution: 0.4 };
+
+// 4. Use a physics mesh in the place of THREE.Mesh.
+// The plugin puts the position of the body into the mesh at each frame. Thus
+// you must put the offset of the slab into the geometry, and not into
+// ground.position. The top of the slab is then at y = 0, as the half space is.
+var groundGeometry = new THREE.BoxGeometry(40, 0.2, 40);
+groundGeometry.translate(0, -0.1, 0);
+var ground = new PhysiN.PlaneMesh(groundGeometry, stone, [0, 1, 0], 0);
+scene.add(ground);
+
+for (var i = 0; i < 4; i += 1) {
+  var box = new PhysiN.BoxMesh(new THREE.BoxGeometry(1, 1, 1), teal, 1);
+  box.setPositionN([0, 0.5 + i, 0]);
+  scene.add(box);
+}
+
+var ball = new PhysiN.SphereMesh(new THREE.SphereGeometry(0.6, 24, 16), plum, 1);
+ball.setPositionN([-6, 3, 0]);
+scene.add(ball);
+// setPositionN and rotateInPlane are local, and thus you can call them before
+// scene.add. A velocity, an impulse or a force is a command to the engine. The
+// mesh sends it through its parent. Thus you must call it after scene.add.
+ball.setLinearVelocity([9, 2, 0]);
+
+// A convex body. The geometry must be convex, and the origin must be inside.
+// A convex body touches a half space and a sphere only. It does not touch a
+// box. Thus this body is away from the stack, and away from the boxes that the
+// ball pushes along the x axis.
+var oct = new PhysiN.ConvexMesh(new THREE.OctahedronGeometry(0.9), plum, 1);
+oct.setPositionN([-4, 4, 3]);
+oct.rotateInPlane(0, 1, 0.6);
+scene.add(oct);
+
+var said = false;
+ball.addEventListener('collision', function (other, normal, point, depth) {
+  if (said) return;    // The ball touches many times. Speak one time.
+  said = true;
+  console.log('the ball touched something, depth ' + depth.toFixed(4));
+});
+
+// 5. Call scene.simulate at each frame.
+function frame() {
+  requestAnimationFrame(frame);
+  scene.simulate(1 / 60, 2);
+  renderer.render(scene, camera);
+}
+frame();
+
+addEventListener('resize', function () {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
