@@ -5,6 +5,9 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test": "node test/worker.js"
+    "test": "node test/worker.js && node --test \"test/spec/*.test.js\""
+  },
+  "devDependencies": {
+    "fast-check": "^4.9.0"
   }
 }
