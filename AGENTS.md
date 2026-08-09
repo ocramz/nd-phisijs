@@ -6,9 +6,18 @@ comments, to the documents and to the messages of the commits.
 # Commands
 
 ```
-npm test                  # the same as: node test/worker.js. 13 tests.
+npm test                  # node test/worker.js (20 tests), then the specs.
 node --check physin.js    # the syntax only
+node tools/sync-bundles.mjs         # copies the engine into physin_worker.js
+node tools/sync-bundles.mjs --check # says what differs, and changes nothing
 ```
+
+**Use `tools/sync-bundles.mjs` to keep the two bundles the same.** It finds each
+module by its `// src/...` marker and puts it in the place of the module of the
+same name. Do not copy a range of lines: the order of the modules is not the
+same in the two files, thus a range copy deletes the module that comes next.
+`test/worker.js` fails when a shared module differs, thus the error cannot go
+out in silence.
 
 There is no build, and there are no dependencies. 
 
@@ -55,6 +64,7 @@ src/nd/body/*.js            PART A: the state, the shapes, the mass properties
 src/nd/detect/*.js          the nearest point, the collision
 src/nd/integrate/*.js       PART B: the time step, the gyroscopic term
 src/nd/resolve/solver.js    PART B: the impulses, the friction, the shock propagation
+src/nd/resolve/constraint.js  PART B: the rows, the five joints
 src/nd/world.js             `World`, and `defaultParams` (all the tolerances)
 src/slice/slice4.js         4D only: the cut of the surface with a 3D hyperplane
 src/nd/workerCore.js        the engine behind the message protocol
@@ -79,7 +89,17 @@ gives the slice.
    matrix. There is no cross product, and there is no axial vector. The order
    of the bivector components is lexicographic: for `n = 4`, index 0 is `(x y)`
    and index 2 is `(x w)`.
-4. **`rotorCorrect` is necessary.** In 4D the norm of a rotor can be exactly 1
+4. **The rows of a joint are named by their position.** A count that changes
+   throws away every impulse that the joint keeps. Thus the row of a motor and
+   the row of a limit are ALWAYS there, and they have no mass when they are
+   off. Do not build a row only when it is needed.
+5. **A joint holds planes, and not axes.** A hinge leaves one rotation
+   **plane** free. In 3D that is 1 plane of 3, and in 4D it is 1 of 6. The
+   angular rows of a joint are bivectors, thus a hinge in 4D holds 5 planes.
+   The error of a rotation comes from the antisymmetric part of the relative
+   rotation matrix, and it is only exact when the free part is one plane or
+   nothing. See `angularError`, and `A13`.
+6. **`rotorCorrect` is necessary.** In 4D the norm of a rotor can be exactly 1
    while the rotor is not a rotation. Only a rotor that is a product of simple
    rotors is correct. Without the correction the energy increases without
    limit. See section 10 of the README, and `B2`.
@@ -102,6 +122,13 @@ collision report, stride = 2 + n + n + 1
 **`workerCore.js` writes the reports and `PhysiN.Scene` reads them. The two
 calculations of the stride must always agree.** If you change a report, change
 the two.
+
+A joint sends no report, and there is no third stride. `addConstraint`,
+`removeConstraint` and `setConstraintParams` are command objects only. A joint
+that the engine cannot build sends `constraintFailed` back, and the plugin
+writes that to the console. A joint that breaks sends `constraintBroken`, and
+the plugin sends the event `broken` on the joint. A command must never go away
+without a message.
 
 The same `createEngine()` code runs in the two conditions. With
 `PhysiN.scripts.worker = null` the plugin calls `handle()` directly, in the main

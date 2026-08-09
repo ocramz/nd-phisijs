@@ -56,6 +56,9 @@
     HyperSphere: () => HyperSphere,
     Torus: () => Torus,
     World: () => World,
+    accumulateDrift: () => accumulateDrift,
+    angularError: () => angularError,
+    angularMass: () => angularMass,
     ballVolume: () => ballVolume,
     boxBoxAxis: () => boxBoxAxis,
     boxVertices: () => boxVertices,
@@ -64,8 +67,10 @@
     commutator: () => commutator,
     commutatorMatrix: () => commutatorMatrix,
     contractVecBi: () => contractVecBi,
+    createConstraint: () => createConstraint,
     defaultParams: () => defaultParams,
     dims: () => dims,
+    hingeAngle: () => hingeAngle,
     hyperBoxInertia: () => hyperBoxInertia,
     hyperBoxMesh: () => hyperBoxMesh,
     hyperSphereInertia: () => hyperSphereInertia,
@@ -75,10 +80,15 @@
     linalg: () => linalg_exports,
     massProperties: () => massProperties,
     mv: () => multivector_exports,
+    orthoComplement: () => orthoComplement,
     prepareContact: () => prepareContact,
+    prepareRows: () => prepareRows,
+    refreshComplement: () => refreshComplement,
+    resetConstraint: () => resetConstraint,
     rotor: () => rotor_exports,
     shockPropagation: () => shockPropagation,
     solveContact: () => solveContact,
+    solveJoint: () => solveJoint,
     starMatrix: () => starMatrix,
     tangentBasis: () => tangentBasis,
     torusCovariance: () => torusCovariance,
@@ -86,6 +96,7 @@
     torusMesh: () => torusMesh,
     torusVolume: () => torusVolume,
     warmStart: () => warmStart,
+    warmStartJoint: () => warmStartJoint,
     wedgeVec: () => wedgeVec
   });
 
@@ -1443,6 +1454,7 @@
       this.sleepTimer = 0;
       this.allowSleep = opts.allowSleep !== false;
       this.level = 0;
+      this._island = 0;
       this._tmpN = new Float64Array(n);
       this._tmpK = new Float64Array(k);
       this._star = new Float64Array(k * n);
@@ -1546,8 +1558,11 @@
      *
      * @param {Float64Array} j the impulse, a vector of length `n`
      * @param {Float64Array} r the offset, a vector of length `n`
+     * @param {boolean} [fromSolver] true when the solver calls this. The body
+     *   then keeps its sleep timer. See `touch`. A caller from outside must
+     *   not give this, thus an impulse of a program always wakes the body.
      */
-    applyImpulse(j, r) {
+    applyImpulse(j, r, fromSolver) {
       if (this.isStatic) return;
       const { n, k } = this.D;
       for (let i = 0; i < n; i += 1) this.v[i] += this.invMass * j[i] * this.linearFactor[i];
@@ -1555,7 +1570,8 @@
       const dL = matVec(S, j, k, n, this._tmpK);
       for (let p = 0; p < k; p += 1) this.L[p] += dL[p] * this.angularFactor[p];
       matVec(this.invInertiaWorld, this.L, k, k, this.w);
-      this.wake();
+      if (fromSolver) this.touch();
+      else this.wake();
     }
     /** Applies an impulse at the center of mass. The body does not start to turn. */
     applyCentralImpulse(j) {
@@ -1563,13 +1579,17 @@
       for (let i = 0; i < this.D.n; i += 1) this.v[i] += this.invMass * j[i] * this.linearFactor[i];
       this.wake();
     }
-    /** Adds `dL` to the angular momentum. Give a bivector of length `k`. */
-    applyTorqueImpulse(dL) {
+    /**
+     * Adds `dL` to the angular momentum. Give a bivector of length `k`.
+     * @param {boolean} [fromSolver] see `applyImpulse`
+     */
+    applyTorqueImpulse(dL, fromSolver) {
       if (this.isStatic) return;
       const { k } = this.D;
       for (let p = 0; p < k; p += 1) this.L[p] += dL[p] * this.angularFactor[p];
       matVec(this.invInertiaWorld, this.L, k, k, this.w);
-      this.wake();
+      if (fromSolver) this.touch();
+      else this.wake();
     }
     /**
      * Adds a force at the center of mass. The force holds until the end of the
@@ -1607,6 +1627,22 @@
         this.sleeping = false;
       }
       this.sleepTimer = 0;
+    }
+    /**
+     * Wakes a body that sleeps, and does NOT touch the timer of a body that is
+     * already awake.
+     *
+     * The solver uses this, and not `wake()`. An impulse of a contact or of a
+     * row is internal: it holds the body where it is, and it must not stop the
+     * body from going to sleep. `wake()` makes `sleepTimer` zero at every call,
+     * thus a box that rests on the ground could never sleep, because the
+     * contact gives it an impulse in every turn of the solver.
+     */
+    touch() {
+      if (this.sleeping) {
+        this.sleeping = false;
+        this.sleepTimer = 0;
+      }
     }
     /**
      * The kinetic energy `(m v.v + w.L) / 2`. The angular part uses `w` and
@@ -3536,9 +3572,9 @@
     if (!c.aStatic) {
       const neg = scratch2(D).neg;
       for (let i = 0; i < n; i += 1) neg[i] = -j[i];
-      c.a.applyImpulse(neg, c.rA);
+      c.a.applyImpulse(neg, c.rA, true);
     }
-    if (!c.bStatic) c.b.applyImpulse(j, c.rB);
+    if (!c.bStatic) c.b.applyImpulse(j, c.rB, true);
   }
   /**
    * Applies the impulse of the last step again, before the main loop. A stack
@@ -3698,6 +3734,1083 @@
     }
   }
 
+  // src/nd/resolve/constraint.js
+  //
+  // The constraints and the joints. A constraint holds a list of rows, and each
+  // row takes away one degree of freedom.
+  //
+  // A row is a linear row or an angular row:
+  //   - A linear row holds a unit direction `dir` of `n` components, and the
+  //     two world offsets `rA` and `rB`. It works on the velocity of a point.
+  //   - An angular row holds a unit bivector `axis` of `k` components. It works
+  //     on the angular velocity.
+  //
+  // The five types:
+  //   point     `n` linear rows. It holds one point of `a` on one point of `b`.
+  //   distance  1 linear row. It holds the length between the two points.
+  //   fixed     `n` linear rows and `k` angular rows. It welds the two bodies.
+  //   hinge     `n` linear rows and `k - 1` angular rows. One plane stays free.
+  //   subspace  the rows that you name. It holds a body in a subspace.
+  //
+  // A hinge leaves one rotation PLANE free, and not one axis. In 3 dimensions
+  // that is 1 plane free of 3. In 4 dimensions it is 1 free of 6, thus a hinge
+  // takes away 5 angular degrees of freedom. In 2 dimensions `k` is 1, thus
+  // there is no angular row and a hinge is the same as a point joint.
+  //
+  // The sign: the error and the velocity always measure `b` against `a`. A
+  // positive impulse pushes `b` along `dir`, or it turns `b` along `axis`.
+  //
+  // The method is the method of the contact solver: take each row in turn,
+  // apply the impulse that makes that one row correct, and repeat. The solver
+  // holds the TOTAL impulse of the row between `lower` and `upper`, and it
+  // applies only the change. The total impulse lives between the steps, thus
+  // the warm start costs nothing.
+  //
+  // See ND-PHYSICS.md, A13 and B8.
+  /** The scratch vectors of the joints of each `D`. Do not hold the result. */
+  var jointScratchCache = /* @__PURE__ */ new WeakMap();
+  /**
+   * The scratch of the joints. It is not the pool of the contact solver,
+   * because `effectiveMass` and `pointVelocity` write into that pool.
+   */
+  function jointScratch(D) {
+    let s = jointScratchCache.get(D);
+    if (!s) {
+      s = {
+        pa: new Float64Array(D.n),
+        pb: new Float64Array(D.n),
+        d: new Float64Array(D.n),
+        ja: new Float64Array(D.n),
+        jb: new Float64Array(D.n),
+        va: new Float64Array(D.n),
+        vb: new Float64Array(D.n),
+        err: new Float64Array(D.k),
+        dl: new Float64Array(D.k),
+        hi: new Float64Array(D.k),
+        proj: new Float64Array(Math.max(D.n, D.k)),
+        iv: new Float64Array(D.k),
+        m1: new Float64Array(D.n * D.n),
+        m2: new Float64Array(D.n * D.n),
+        uw: new Float64Array(D.n),
+        vw: new Float64Array(D.n),
+        t1: new Float64Array(D.n),
+        t2: new Float64Array(D.n),
+        mu: new Float64Array(D.n),
+        soft: { biasRate: 0, massScale: 1, impulseScale: 0 }
+      };
+      jointScratchCache.set(D, s);
+    }
+    return s;
+  }
+  /** The static body of the world of each `D`. */
+  var worldBodyCache = /* @__PURE__ */ new WeakMap();
+  /**
+   * The body that a joint to the world uses in the place of `b`. It is static,
+   * it is at the origin, and its rotor is the identity. `effectiveMass` gives 0
+   * for it, and `applyImpulse` does nothing to it.
+   *
+   * The body is not in `world.bodies`, thus the broad phase, the contact graph
+   * and the sleep never see it. It takes every test for a null body out of the
+   * solver.
+   */
+  function worldBody(D) {
+    let b = worldBodyCache.get(D);
+    if (!b) {
+      b = new Body(D, {
+        id: -1,
+        name: "world",
+        mass: 0,
+        shape: { type: "point", n: D.n, boundingRadius: 0 }
+      });
+      worldBodyCache.set(D, b);
+    }
+    return b;
+  }
+  /**
+   * The inverse of the inertia that a body shows along the bivector `axis`:
+   *
+   *   axis . (I'^-1 axis)
+   *
+   * A static body gives 0. This is the angular form of `effectiveMass`.
+   * See ND-PHYSICS.md, A13.
+   */
+  function angularMass(D, body, axis) {
+    if (body.isStatic) return 0;
+    const { k } = D;
+    const iv = matVec(body.invInertiaWorld, axis, k, k, jointScratch(D).iv);
+    let m = 0;
+    for (let p = 0; p < k; p += 1) m += iv[p] * axis[p];
+    return m;
+  }
+  /**
+   * The rest relation of the two bodies: `Q = Rm_a^T Rm_b`, an `n` x `n`
+   * matrix. Take it one time, when the joint starts. The loop is here because
+   * `matTranspose` is not in the worker bundle.
+   */
+  function restRelation(D, a, b) {
+    const { n } = D;
+    const Q = new Float64Array(n * n);
+    for (let i = 0; i < n; i += 1) {
+      for (let j = 0; j < n; j += 1) {
+        let sum = 0;
+        for (let m = 0; m < n; m += 1) sum += a.Rm[m * n + i] * b.Rm[m * n + j];
+        Q[i * n + j] = sum;
+      }
+    }
+    return Q;
+  }
+  /**
+   * The error of the rotation of `b` against `a`, as a bivector of `k`
+   * components. `Q` is the rest relation from `restRelation`.
+   *
+   *   T = Rm_a Q      the rotation that `b` must have
+   *   M = Rm_b T^T    the error rotation, in the world frame
+   *   e[p] = (M[j n + i] - M[i n + j]) / 2   for D.pairs[p] = [i, j]
+   *
+   * This is the logarithm of `M` to the first order.
+   *
+   * WHEN IT IS EXACT. For a SIMPLE rotation, thus a rotation in one plane, the
+   * result is exactly `sin(angle)` on that plane and 0 on each other plane, at
+   * any angle. For a rotation in two planes together the result mixes: a
+   * rotation of 1.0 in the plane `(x y)` and of 1.0 in the plane `(y z)` gives
+   * 0.354 on the plane `(x z)`, in which nothing turned.
+   *
+   * Thus a joint must only use this error when the part that stays free is one
+   * plane or nothing. `prepareRows` tests that: it uses the error when the
+   * joint holds `k` or `k - 1` planes, and it holds the velocity only when the
+   * joint leaves two or more planes free. See ND-PHYSICS.md, A13.
+   *
+   * THE SIGN. The error carries the same sign as `body.w`: a component that is
+   * more than zero is a turn from the axis `i` toward the axis `j`. Two
+   * measurements give this, and `test/spec/constraint.test.js` holds them:
+   *   - `rotorFromPlane(D, i, j, 0.1)` on `b` gives `e[p] = +sin(0.1)`.
+   *   - `w[p] = 1` for 0.1 seconds gives `e[p] = +0.09975`.
+   * The minus sign of `dR/dt = -(1/2) w R` and the minus sign of the reverse
+   * take each other away. See ND-PHYSICS.md, A13.
+   *
+   * The frame is the world frame, because `invInertiaWorld` and `body.w` are in
+   * the world frame.
+   */
+  function angularError(D, a, b, Q, out) {
+    const { n, k } = D;
+    const s = jointScratch(D);
+    const T = matMul(a.Rm, Q, n, n, n, s.m1);
+    const M = matMulT(b.Rm, T, n, n, n, s.m2);
+    const e = out || s.err;
+    for (let p = 0; p < k; p += 1) {
+      const i = D.pairs[p][0];
+      const j = D.pairs[p][1];
+      e[p] = (M[j * n + i] - M[i * n + j]) / 2;
+    }
+    return e;
+  }
+  /** Takes the part of `t` that goes along the unit vector `u` away from `t`. */
+  function projectOff(t, dim, u) {
+    let d = 0;
+    for (let i = 0; i < dim; i += 1) d += t[i] * u[i];
+    for (let i = 0; i < dim; i += 1) t[i] -= d * u[i];
+  }
+  /**
+   * Makes `t` orthogonal to each vector of `spans` and of `rest`, then makes it
+   * a unit vector. It gives false when `t` becomes shorter than `tol`.
+   */
+  function orthonormalize(t, dim, spans, rest, tol) {
+    for (let c = 0; c < spans.length; c += 1) projectOff(t, dim, spans[c]);
+    for (let c = 0; c < rest.length; c += 1) projectOff(t, dim, rest[c]);
+    let ln = 0;
+    for (let i = 0; i < dim; i += 1) ln += t[i] * t[i];
+    ln = Math.sqrt(ln);
+    if (ln < tol) return false;
+    for (let i = 0; i < dim; i += 1) t[i] /= ln;
+    return true;
+  }
+  /** The largest absolute value that the vectors of `spans` hold on the axis `i`. */
+  function axisWeight(spans, i) {
+    let m = 0;
+    for (let c = 0; c < spans.length; c += 1) {
+      const a = Math.abs(spans[c][i]);
+      if (a > m) m = a;
+    }
+    return m;
+  }
+  /**
+   * `want` unit vectors of the length `dim` that are orthogonal to each vector
+   * of `spans`. `want` is `dim - spans.length` when you do not give it.
+   *
+   * The method is the method of `tangentBasis`: try the axes, and start with
+   * the axis that `spans` uses the least. `tangentBasis` only works at the
+   * length `n`, and this function also works at the length `k`.
+   */
+  function orthoComplement(dim, spans, tol, want) {
+    const need = want !== void 0 ? want : dim - spans.length;
+    const T = [];
+    const order = [];
+    for (let i = 0; i < dim; i += 1) order.push(i);
+    order.sort((p, q) => axisWeight(spans, p) - axisWeight(spans, q));
+    for (let c = 0; c < order.length; c += 1) {
+      if (T.length >= need) break;
+      const t = new Float64Array(dim);
+      t[order[c]] = 1;
+      if (orthonormalize(t, dim, spans, T, tol)) T.push(t);
+    }
+    return T;
+  }
+  /**
+   * The same as `orthoComplement`, but the result stays near the result of the
+   * last step. Give the vectors of the last step in `prev`.
+   *
+   * THIS IS NECESSARY, and it is not a nicety. A basis that comes from the axes
+   * at each step TURNS OVER when `spans` moves past a tie in the order of the
+   * axes. The impulse that the row keeps then goes along a different direction,
+   * and that puts energy into the world: a jolt one time in each turn of the
+   * hinge. Thus the function starts from the vectors of the last step, and it
+   * only builds a new vector when an old vector is not usable.
+   *
+   * The function writes into the vectors of `prev`, thus it makes no garbage
+   * after the first step.
+   */
+  function refreshComplement(dim, spans, prev, tol) {
+    const need = dim - spans.length;
+    const T = [];
+    if (prev) {
+      for (let c = 0; c < prev.length; c += 1) {
+        if (T.length >= need) break;
+        const t = prev[c];
+        if (orthonormalize(t, dim, spans, T, tol)) T.push(t);
+      }
+    }
+    if (T.length < need) {
+      const more = orthoComplement(dim, spans.concat(T), tol, need - T.length);
+      for (let c = 0; c < more.length; c += 1) T.push(more[c]);
+    }
+    return T;
+  }
+  /**
+   * Makes the error smaller by `slop`, along the direction of the error. It
+   * gives a zero vector when the error is not larger than `slop`.
+   *
+   * The function works on the length of the whole vector, and not on each
+   * component. A slop on each component makes a dead zone in the shape of a
+   * box, and the joint is then not the same in every direction.
+   *
+   * GIVE ONLY THE PART OF THE ERROR THAT THE JOINT HOLDS. A direction that the
+   * joint leaves free carries an error that grows without limit, and that
+   * error would make the length large and the slop would then do nothing. See
+   * `projectError`.
+   */
+  function shrinkError(e, dim, slop) {
+    let m = 0;
+    for (let i = 0; i < dim; i += 1) m += e[i] * e[i];
+    m = Math.sqrt(m);
+    if (m <= slop) {
+      for (let i = 0; i < dim; i += 1) e[i] = 0;
+      return e;
+    }
+    const f = (m - slop) / m;
+    for (let i = 0; i < dim; i += 1) e[i] *= f;
+    return e;
+  }
+  /**
+   * The three factors of the softness of a joint, for one substep.
+   *
+   * A joint with `hertz` at more than 0 is a spring of that frequency and of
+   * that damping ratio. The stiffness then does NOT change with the length of
+   * the step, which the raw bias of Baumgarte cannot give. The method comes
+   * from Erin Catto, "Soft Constraints", GDC 2011.
+   *
+   *   om = 2 pi hertz
+   *   a1 = 2 zeta + dt om;  a2 = dt om a1;  a3 = 1 / (1 + a2)
+   *   biasRate = om / a1;  massScale = a2 a3;  impulseScale = a3
+   *
+   * `hertz` at 0 makes a RIGID joint: the function gives back the old bias
+   * rate of `constraintBias / dt`, a mass scale of 1 and an impulse scale of
+   * 0. The solver is then the same, number for number.
+   *
+   * A frequency above `constraintHertzRatio / dt` is not stable, thus the
+   * function holds it there. See ND-PHYSICS.md, B9.
+   */
+  function softness(joint, dt, params, out) {
+    const hertz = joint.hertz >= 0 ? joint.hertz : params.constraintHertz;
+    if (!(hertz > 0)) {
+      out.biasRate = params.constraintBias / dt;
+      out.massScale = 1;
+      out.impulseScale = 0;
+      return out;
+    }
+    const zeta = joint.damping >= 0 ? joint.damping : params.constraintDamping;
+    const limit = params.constraintHertzRatio / dt;
+    const hz = hertz > limit ? limit : hertz;
+    const om = 2 * Math.PI * hz;
+    const a1 = 2 * zeta + dt * om;
+    const a2 = dt * om * a1;
+    const a3 = 1 / (1 + a2);
+    out.biasRate = om / a1;
+    out.massScale = a2 * a3;
+    out.impulseScale = a3;
+    return out;
+  }
+  /**
+   * The error `e` in the frame of the rows: `proj[c] = e . basis[c]`. This
+   * takes away every direction that the joint leaves free, thus the slop then
+   * works on the part that the joint holds and on nothing else.
+   */
+  function projectError(D, e, basis, dim, out) {
+    for (let c = 0; c < basis.length; c += 1) {
+      let sum = 0;
+      for (let i = 0; i < dim; i += 1) sum += e[i] * basis[c][i];
+      out[c] = sum;
+    }
+    return out;
+  }
+  /**
+   * Holds the bias between `-limit` and `+limit`. A teleport gives an error of
+   * many units, and the bias is the error divided by the time of the step. The
+   * limit stops that from throwing the body away.
+   */
+  function clampBias(bias, limit) {
+    if (bias > limit) return limit;
+    if (bias < -limit) return -limit;
+    return bias;
+  }
+  /**
+   * An orthonormal basis `(u, v)` of the plane of a SIMPLE unit bivector `h`.
+   *
+   * It builds the `n` x `n` antisymmetric matrix `H` of `h`, takes the column
+   * of the largest length as `u`, and takes `v = H u`. For a unit simple
+   * bivector `|H u| = |u|` and `v` is orthogonal to `u`, thus the two vectors
+   * span the plane.
+   *
+   * Take the basis ONE TIME, when the joint starts. A basis that came from the
+   * columns at each step would jump when the largest column changed, and the
+   * angle of the hinge would jump with it.
+   *
+   * @throws {Error} when the bivector is too short, or when it is not simple
+   */
+  function planeBasis(D, h, tol) {
+    const { n, k } = D;
+    const H = new Float64Array(n * n);
+    for (let p = 0; p < k; p += 1) {
+      const i = D.pairs[p][0];
+      const j = D.pairs[p][1];
+      H[j * n + i] += h[p];
+      H[i * n + j] -= h[p];
+    }
+    let best = -1;
+    let bestLen = 0;
+    for (let c = 0; c < n; c += 1) {
+      let ln = 0;
+      for (let i = 0; i < n; i += 1) ln += H[i * n + c] * H[i * n + c];
+      if (ln > bestLen) {
+        bestLen = ln;
+        best = c;
+      }
+    }
+    if (best < 0 || Math.sqrt(bestLen) < tol) {
+      throw new Error("createConstraint: the plane of the joint is too short");
+    }
+    const u = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) u[i] = H[i * n + best];
+    let ln = Math.sqrt(bestLen);
+    for (let i = 0; i < n; i += 1) u[i] /= ln;
+    const v = matVec(H, u, n, n, new Float64Array(n));
+    ln = 0;
+    for (let i = 0; i < n; i += 1) ln += v[i] * v[i];
+    ln = Math.sqrt(ln);
+    if (ln < tol) throw new Error("createConstraint: the plane of the joint is too short");
+    for (let i = 0; i < n; i += 1) v[i] /= ln;
+    return { u, v };
+  }
+  /**
+   * True when the bivector `h` is simple, thus when it is the plane of one
+   * rotation. A bivector is simple when `h ^ h = 0`.
+   *
+   * In 4 dimensions and more a bivector can hold two planes at the same time,
+   * for example `e_xy + e_zw`. That is not a hinge, and the angle of a hinge
+   * has no meaning for it.
+   */
+  function isSimpleBivector(D, h) {
+    if (D.k < 6) return true;
+    const A = mvFromBivector(D, h, mvZero(D));
+    const W = mvWedge(D, A, A, mvZero(D));
+    let m = 0;
+    for (let i = 0; i < W.length; i += 1) m = Math.max(m, Math.abs(W[i]));
+    return m < 1e-9;
+  }
+  /**
+   * The angle of a hinge, in radians, in the interval `(-pi, pi]`.
+   *
+   *   M = Rm_b Q^T Rm_a^T                 the error rotation, in the world
+   *   angle = atan2(v . (M u), u . (M u))
+   *
+   * `(u, v)` is the basis of the free plane, turned into the world by `Rm_a`.
+   *
+   * THIS IS EXACT at any angle, and it stays exact when the two bodies also
+   * turn in other planes. A test holds it at 0.3, 2.0, 3.0 and -1.5 radians
+   * with a turn of 0.7 in another plane, to 1e-12. The first order logarithm
+   * of `angularError` is NOT exact in that condition; this is, because the
+   * free part of a hinge is one plane and a rotation in one plane commutes
+   * with itself.
+   *
+   * The value wraps at `pi`. A limit outside `(-pi, pi)` has no meaning.
+   * See ND-PHYSICS.md, B10.
+   */
+  function hingeAngle(D, joint) {
+    const { n } = D;
+    const s = jointScratch(D);
+    const a = joint.a;
+    const b = joint.b;
+    const u = matVec(a.Rm, joint.planeU, n, n, s.uw);
+    const v = matVec(a.Rm, joint.planeV, n, n, s.vw);
+    const t1 = matTVec(a.Rm, u, n, n, s.t1);
+    const t2 = matTVec(joint.restRel, t1, n, n, s.t2);
+    const mu = matVec(b.Rm, t2, n, n, s.mu);
+    let cu = 0;
+    let cv = 0;
+    for (let i = 0; i < n; i += 1) {
+      cu += u[i] * mu[i];
+      cv += v[i] * mu[i];
+    }
+    return Math.atan2(cv, cu);
+  }
+  /** A new row. `kind` is "linear" or "angular". */
+  function makeRow(D, kind) {
+    const linear = kind === "linear";
+    return {
+      kind,
+      dir: linear ? new Float64Array(D.n) : null,
+      rA: linear ? new Float64Array(D.n) : null,
+      rB: linear ? new Float64Array(D.n) : null,
+      axis: linear ? null : new Float64Array(D.k),
+      km: 0,
+      bias: 0,
+      lower: -Infinity,
+      upper: Infinity,
+      impulse: 0,
+      massScale: 1,
+      impulseScale: 0,
+      drift: 0
+    };
+  }
+  /**
+   * Makes the impulse of each row zero, and keeps the drift.
+   *
+   * The warm start uses this. A joint that runs with `useWarmStart` at false
+   * must still keep the drift that it has measured, or the correction of the
+   * drift goes away without a message.
+   */
+  function resetImpulses(joint) {
+    for (let c = 0; c < joint.rows.length; c += 1) joint.rows[c].impulse = 0;
+  }
+  /**
+   * Makes the impulse AND the drift of each row zero. Use this when the joint
+   * loses its history: a teleport of a body, or a new body from `setMass`.
+   */
+  function resetConstraint(joint) {
+    for (let c = 0; c < joint.rows.length; c += 1) {
+      joint.rows[c].impulse = 0;
+      joint.rows[c].drift = 0;
+    }
+  }
+  /** A list of unit vectors of the length `dim`, from a list of axis numbers. */
+  function axisVectors(dim, list) {
+    const out = [];
+    for (let c = 0; c < list.length; c += 1) {
+      const v = new Float64Array(dim);
+      if (typeof list[c] === "number") {
+        if (list[c] < 0 || list[c] >= dim) {
+          throw new Error("createConstraint: the axis " + list[c] + " is not in the range");
+        }
+        v[list[c]] = 1;
+      } else {
+        v.set(list[c]);
+        let ln = 0;
+        for (let i = 0; i < dim; i += 1) ln += v[i] * v[i];
+        ln = Math.sqrt(ln);
+        if (ln === 0) throw new Error("createConstraint: a direction has the length 0");
+        for (let i = 0; i < dim; i += 1) v[i] /= ln;
+      }
+      out.push(v);
+    }
+    return out;
+  }
+  /**
+   * Builds a joint. `a` is a body, and `b` is a body or null. A null `b` makes
+   * a joint to the world.
+   *
+   * The anchors `localA` and `localB` are ALWAYS in the local frame of their
+   * body. With a null `b`, `localB` takes the world position of the anchor of
+   * `a` when you do not give it, thus the joint holds the body where it is.
+   *
+   * @param {object} def the definition
+   * @param {string} def.type point, distance, fixed, hinge or subspace
+   * @param {number} [def.id] the id of the joint
+   * @param {ArrayLike<number>} [def.localA] the anchor on `a`, `n`
+   * @param {ArrayLike<number>} [def.localB] the anchor on `b`, `n`
+   * @param {number} [def.rest] the rest length             (distance)
+   * @param {string} [def.mode] rod, rope or strut          (distance)
+   * @param {number|ArrayLike<number>} [def.plane] the free plane, in the frame
+   *   of `a`: a number of `D.pairs`, or a bivector of `k`   (hinge)
+   * @param {Array} [def.lockAxes] the directions that the joint holds  (subspace)
+   * @param {Array} [def.freeAxes] the directions that stay free        (subspace)
+   * @param {Array} [def.lockPlanes] the planes that the joint holds    (subspace)
+   * @param {Array} [def.freePlanes] the planes that stay free          (subspace)
+   * @param {boolean} [def.worldFrame] true holds the directions in the world
+   *   frame. The default holds them in the frame of `a`.       (subspace)
+   * @param {boolean} [def.collideConnected] true lets the two bodies touch.
+   *   The default is false.
+   * @param {boolean} [def.enabled] false leaves the joint out. Default true.
+   * @param {object} [params] the params of the world. It gives
+   *   `constraintTolerance` to the complement basis.
+   */
+  function createConstraint(D, def, a, b, params) {
+    const { n, k } = D;
+    const tol = (params || defaultParams).constraintTolerance;
+    const B = b || worldBody(D);
+    const type = def.type;
+    const joint = {
+      id: def.id !== void 0 ? def.id : 0,
+      type,
+      a,
+      b: B,
+      toWorld: !b,
+      localA: new Float64Array(n),
+      localB: new Float64Array(n),
+      rest: def.rest !== void 0 ? def.rest : 0,
+      mode: def.mode || "rod",
+      length: 0,
+      restRel: null,
+      planeLocal: null,
+      linearMode: "none",
+      angularMode: "none",
+      linearLocal: null,
+      angularLocal: null,
+      linearBasis: [],
+      angularBasis: [],
+      useDrift: false,
+      planeU: null,
+      planeV: null,
+      freeAxis: null,
+      angle: 0,
+      hasLimit: false,
+      lowerAngle: def.lowerAngle !== void 0 ? def.lowerAngle : -Infinity,
+      upperAngle: def.upperAngle !== void 0 ? def.upperAngle : Infinity,
+      motorSpeed: def.motorSpeed !== void 0 ? def.motorSpeed : 0,
+      maxMotorTorque: def.maxMotorTorque !== void 0 ? def.maxMotorTorque : 0,
+      breakForce: def.breakForce !== void 0 ? def.breakForce : 0,
+      breakTorque: def.breakTorque !== void 0 ? def.breakTorque : 0,
+      linearImpulse: 0,
+      angularImpulse: 0,
+      hertz: def.hertz !== void 0 ? def.hertz : -1,
+      damping: def.damping !== void 0 ? def.damping : -1,
+      worldFrame: def.worldFrame === true,
+      collideConnected: def.collideConnected === true,
+      enabled: def.enabled !== false,
+      rows: []
+    };
+    if (def.localA) joint.localA.set(def.localA);
+    if (def.localB) joint.localB.set(def.localB);
+    else if (!b) a.localToWorld(joint.localA, joint.localB);
+    if (type === "point") {
+      joint.linearMode = "axes";
+    } else if (type === "distance") {
+      joint.linearMode = "distance";
+      if (def.rest === void 0) {
+        const pA = a.localToWorld(joint.localA, jointScratch(D).pa);
+        const pB = B.localToWorld(joint.localB, jointScratch(D).pb);
+        let len = 0;
+        for (let i = 0; i < n; i += 1) len += (pB[i] - pA[i]) * (pB[i] - pA[i]);
+        joint.rest = Math.sqrt(len);
+      }
+    } else if (type === "fixed") {
+      joint.linearMode = "axes";
+      joint.angularMode = "axes";
+      joint.restRel = restRelation(D, a, B);
+    } else if (type === "hinge") {
+      joint.linearMode = "axes";
+      joint.angularMode = k > 1 ? "hinge" : "none";
+      joint.restRel = restRelation(D, a, B);
+      joint.planeLocal = new Float64Array(k);
+      const plane = def.plane !== void 0 ? def.plane : 0;
+      if (typeof plane === "number") {
+        if (plane < 0 || plane >= k) throw new Error("createConstraint: the plane " + plane + " is not in the range");
+        joint.planeLocal[plane] = 1;
+      } else {
+        joint.planeLocal.set(plane);
+        let ln = 0;
+        for (let p = 0; p < k; p += 1) ln += joint.planeLocal[p] * joint.planeLocal[p];
+        ln = Math.sqrt(ln);
+        if (ln < tol) throw new Error("createConstraint: the plane of the hinge has the length 0");
+        for (let p = 0; p < k; p += 1) joint.planeLocal[p] /= ln;
+      }
+      if (!isSimpleBivector(D, joint.planeLocal)) {
+        throw new Error("createConstraint: the plane of the hinge is not simple");
+      }
+      const basis = planeBasis(D, joint.planeLocal, tol);
+      joint.planeU = basis.u;
+      joint.planeV = basis.v;
+      joint.hasLimit = joint.lowerAngle > -Infinity || joint.upperAngle < Infinity;
+    } else if (type === "subspace") {
+      if (def.lockAxes) {
+        joint.linearMode = "list";
+        joint.linearLocal = axisVectors(n, def.lockAxes);
+      } else if (def.freeAxes) {
+        joint.linearMode = "list";
+        joint.linearLocal = orthoComplement(n, axisVectors(n, def.freeAxes), tol);
+      }
+      if (def.lockPlanes) {
+        joint.angularMode = "list";
+        joint.angularLocal = axisVectors(k, def.lockPlanes);
+      } else if (def.freePlanes) {
+        joint.angularMode = "list";
+        joint.angularLocal = orthoComplement(k, axisVectors(k, def.freePlanes), tol);
+      }
+      if (joint.angularMode !== "none") joint.restRel = restRelation(D, a, B);
+    } else {
+      throw new Error("createConstraint: the type " + type + " is not known");
+    }
+    return joint;
+  }
+  /** Builds the world directions of the linear rows of this step. */
+  function updateLinearBasis(D, joint, d, tol) {
+    const { n } = D;
+    const mode = joint.linearMode;
+    if (mode === "none") {
+      joint.linearBasis.length = 0;
+      return;
+    }
+    if (mode === "distance") {
+      let len = 0;
+      for (let i = 0; i < n; i += 1) len += d[i] * d[i];
+      len = Math.sqrt(len);
+      joint.length = len;
+      if (len < tol) {
+        joint.linearBasis.length = 0;
+        return;
+      }
+      if (joint.linearBasis.length !== 1) joint.linearBasis = [new Float64Array(n)];
+      const u = joint.linearBasis[0];
+      for (let i = 0; i < n; i += 1) u[i] = d[i] / len;
+      return;
+    }
+    if (mode === "axes") {
+      if (joint.linearBasis.length !== n) {
+        joint.linearBasis = [];
+        for (let i = 0; i < n; i += 1) {
+          const u = new Float64Array(n);
+          u[i] = 1;
+          joint.linearBasis.push(u);
+        }
+      }
+      return;
+    }
+    const list = joint.linearLocal;
+    if (joint.linearBasis.length !== list.length) {
+      joint.linearBasis = [];
+      for (let c = 0; c < list.length; c += 1) joint.linearBasis.push(new Float64Array(n));
+    }
+    for (let c = 0; c < list.length; c += 1) {
+      if (joint.worldFrame) joint.linearBasis[c].set(list[c]);
+      else matVec(joint.a.Rm, list[c], n, n, joint.linearBasis[c]);
+    }
+  }
+  /** Builds the world bivectors of the angular rows of this step. */
+  function updateAngularBasis(D, joint, tol) {
+    const { k } = D;
+    const mode = joint.angularMode;
+    if (mode === "none") {
+      joint.angularBasis.length = 0;
+      return;
+    }
+    if (mode === "axes") {
+      if (joint.angularBasis.length !== k) {
+        joint.angularBasis = [];
+        for (let p = 0; p < k; p += 1) {
+          const u = new Float64Array(k);
+          u[p] = 1;
+          joint.angularBasis.push(u);
+        }
+      }
+      return;
+    }
+    if (mode === "hinge") {
+      const h = joint.freeAxis;
+      if (h === null) {
+        joint.angularBasis.length = 0;
+        return;
+      }
+      joint.angularBasis = refreshComplement(k, [h], joint.angularBasis, tol);
+      return;
+    }
+    const list = joint.angularLocal;
+    if (joint.angularBasis.length !== list.length) {
+      joint.angularBasis = [];
+      for (let c = 0; c < list.length; c += 1) joint.angularBasis.push(new Float64Array(k));
+    }
+    for (let c = 0; c < list.length; c += 1) {
+      if (joint.worldFrame) joint.angularBasis[c].set(list[c]);
+      else matVec(joint.a.R2, list[c], k, k, joint.angularBasis[c]);
+    }
+  }
+  /**
+   * Builds the rows of a joint. Call this one time in each step, before
+   * `solveJoint`.
+   *
+   * The bias of a row is `-(constraintBias / dt) * error`. It gives back a part
+   * of the error in each step. The solver drives the velocity of the row toward
+   * the bias, thus the error goes to zero. See ND-PHYSICS.md, B8.
+   *
+   * The function keeps the rows when their count does not change, because the
+   * impulse of a row must live between the steps for the warm start.
+   *
+   * An angular row only takes a bias when the joint holds `k` or `k - 1`
+   * planes. With two or more planes free the first-order logarithm of the
+   * relative rotation mixes the planes, and a bias from it would push the body
+   * in a plane in which nothing turned. The row then holds the velocity only,
+   * and it does not correct a drift. See `angularError`.
+   */
+  function prepareRows(D, joint, dt, params) {
+    const { n, k } = D;
+    const s = jointScratch(D);
+    const a = joint.a;
+    const b = joint.b;
+    const tol = params.constraintTolerance;
+    const slop = params.constraintSlop;
+    const maxBias = params.constraintMaxBias;
+    const soft = softness(joint, dt, params, s.soft);
+    const gain = soft.biasRate;
+    const pA = a.localToWorld(joint.localA, s.pa);
+    const pB = b.localToWorld(joint.localB, s.pb);
+    const d = s.d;
+    for (let i = 0; i < n; i += 1) d[i] = pB[i] - pA[i];
+    updateLinearBasis(D, joint, d, tol);
+    updateFreeAxis(D, joint, tol);
+    updateAngularBasis(D, joint, tol);
+    const nl = joint.linearBasis.length;
+    const na = joint.angularBasis.length;
+    // The row of the motor and the row of the limit are ALWAYS there, and they
+    // have `km` at 0 when they are off. A row that came and went would change
+    // the count, and a change of the count throws away every impulse that the
+    // joint keeps -- at the moment that a limit engages, which is the worst
+    // moment. The test "the row identity holds" holds this.
+    const extra = joint.planeLocal !== null ? 2 : 0;
+    if (joint.rows.length !== nl + na + extra) {
+      joint.rows = [];
+      for (let c = 0; c < nl; c += 1) joint.rows.push(makeRow(D, "linear"));
+      for (let c = 0; c < na + extra; c += 1) joint.rows.push(makeRow(D, "angular"));
+    }
+    if (!params.useWarmStart) resetImpulses(joint);
+    const rawLength = joint.length;
+    const proj = s.proj;
+    if (joint.linearMode !== "distance") {
+      shrinkError(projectError(D, d, joint.linearBasis, n, proj), nl, slop);
+    }
+    for (let c = 0; c < nl; c += 1) {
+      const row = joint.rows[c];
+      row.dir.set(joint.linearBasis[c]);
+      for (let i = 0; i < n; i += 1) {
+        row.rA[i] = pA[i] - a.x[i];
+        row.rB[i] = pB[i] - b.x[i];
+      }
+      row.km = effectiveMass(D, a, row.rA, row.dir, false) + effectiveMass(D, b, row.rB, row.dir, false);
+      row.lower = -Infinity;
+      row.upper = Infinity;
+      row.massScale = soft.massScale;
+      row.impulseScale = soft.impulseScale;
+      let err = 0;
+      if (joint.linearMode === "distance") {
+        const raw = rawLength - joint.rest;
+        if (joint.mode === "rope") {
+          row.lower = -Infinity;
+          row.upper = 0;
+          if (raw <= 0) {
+            row.km = 0;
+            row.impulse = 0;
+          }
+        } else if (joint.mode === "strut") {
+          row.lower = 0;
+          row.upper = Infinity;
+          if (raw >= 0) {
+            row.km = 0;
+            row.impulse = 0;
+          }
+        }
+        err = raw > slop ? raw - slop : raw < -slop ? raw + slop : 0;
+      } else {
+        err = proj[c];
+      }
+      row.bias = clampBias(-gain * err, maxBias);
+    }
+    const useError = na > 0 && na >= k - 1;
+    joint.useDrift = na > 0 && !useError;
+    if (na > 0) {
+      if (useError) {
+        shrinkError(projectError(D, angularError(D, a, b, joint.restRel, s.err),
+          joint.angularBasis, k, proj), na, slop);
+      } else {
+        for (let c = 0; c < na; c += 1) proj[c] = joint.rows[nl + c].drift;
+        shrinkError(proj, na, slop);
+      }
+      for (let c = 0; c < na; c += 1) {
+        const row = joint.rows[nl + c];
+        row.axis.set(joint.angularBasis[c]);
+        row.km = angularMass(D, a, row.axis) + angularMass(D, b, row.axis);
+        row.lower = -Infinity;
+        row.upper = Infinity;
+        row.massScale = soft.massScale;
+        row.impulseScale = soft.impulseScale;
+        if (useError) row.drift = 0;
+        row.bias = clampBias(-gain * proj[c], maxBias);
+      }
+    }
+    if (extra === 0) return;
+    prepareHingeRows(D, joint, nl + na, dt, params);
+  }
+  /**
+   * The row of the motor and the row of the limit of a hinge. The two rows sit
+   * on the same free plane `h`, thus they work against each other.
+   *
+   * THE TWO ROWS STAY RIGID. They do not take the softness of the joint: a
+   * limit that gives way is not a limit, and a motor is a source of speed and
+   * not a spring.
+   *
+   * The motor comes FIRST and the limit comes SECOND. `solveJoint` walks the
+   * rows forward, thus the limit has the last word in each turn. A motor that
+   * drives into a limit then stalls, and the joint holds at the limit.
+   *
+   * The motor takes a TORQUE and not an impulse. The clamp is
+   * `maxMotorTorque * dt`, thus the strength of the motor does not change when
+   * you change `subSteps`. See ND-PHYSICS.md, B10.
+   */
+  function prepareHingeRows(D, joint, at, dt, params) {
+    const { k } = D;
+    const slop = params.constraintSlop;
+    const maxBias = params.constraintMaxBias;
+    const rigidRate = params.constraintBias / dt;
+    const h = joint.freeAxis;
+    const km = h === null ? 0 : angularMass(D, joint.a, h) + angularMass(D, joint.b, h);
+    joint.angle = h === null ? 0 : hingeAngle(D, joint);
+    const motor = joint.rows[at];
+    const limit = joint.rows[at + 1];
+    motor.massScale = 1;
+    motor.impulseScale = 0;
+    motor.drift = 0;
+    limit.massScale = 1;
+    limit.impulseScale = 0;
+    limit.drift = 0;
+    if (h !== null) {
+      motor.axis.set(h);
+      limit.axis.set(h);
+    }
+    if (joint.maxMotorTorque > 0 && km > 0) {
+      const cap = joint.maxMotorTorque * dt;
+      motor.km = km;
+      motor.bias = joint.motorSpeed;
+      motor.lower = -cap;
+      motor.upper = cap;
+    } else {
+      motor.km = 0;
+      motor.impulse = 0;
+      motor.bias = 0;
+      motor.lower = 0;
+      motor.upper = 0;
+    }
+    let err = 0;
+    let lower = 0;
+    let upper = 0;
+    if (joint.hasLimit && km > 0) {
+      if (joint.angle < joint.lowerAngle) {
+        err = joint.angle - joint.lowerAngle;
+        lower = 0;
+        upper = Infinity;
+      } else if (joint.angle > joint.upperAngle) {
+        err = joint.angle - joint.upperAngle;
+        lower = -Infinity;
+        upper = 0;
+      }
+    }
+    if (err !== 0) {
+      err = err > slop ? err - slop : err < -slop ? err + slop : 0;
+      limit.km = km;
+      limit.lower = lower;
+      limit.upper = upper;
+      limit.bias = clampBias(-rigidRate * err, maxBias);
+    } else {
+      limit.km = 0;
+      limit.impulse = 0;
+      limit.bias = 0;
+      limit.lower = 0;
+      limit.upper = 0;
+    }
+  }
+  /**
+   * The free plane of a hinge, in the world frame. A hinge of 2 dimensions has
+   * no angular row, thus `updateAngularBasis` never runs for it; the motor and
+   * the limit still need the plane.
+   */
+  function updateFreeAxis(D, joint, tol) {
+    const { k } = D;
+    if (joint.planeLocal === null) return;
+    if (joint.freeAxis === null) joint.freeAxis = new Float64Array(k);
+    const h = joint.freeAxis;
+    matVec(joint.a.R2, joint.planeLocal, k, k, h);
+    let ln = 0;
+    for (let p = 0; p < k; p += 1) ln += h[p] * h[p];
+    ln = Math.sqrt(ln);
+    if (ln < tol) {
+      joint.freeAxis = null;
+      return;
+    }
+    for (let p = 0; p < k; p += 1) h[p] /= ln;
+  }
+  /**
+   * Applies the impulse `dJ` of one row. A linear row gives `+dJ dir` to `b` at
+   * `rB` and `-dJ dir` to `a` at `rA`, thus the total momentum does not change.
+   *
+   * The impulse goes through `applyImpulse` and `applyTorqueImpulse`, because
+   * `updateDerived` builds `w` again from `L` at the end of each step. A write
+   * into `w` would go away.
+   */
+  function applyRow(D, joint, row, dJ) {
+    const { n, k } = D;
+    const s = jointScratch(D);
+    if (row.kind === "linear") {
+      const jb = s.jb;
+      const ja = s.ja;
+      for (let i = 0; i < n; i += 1) {
+        jb[i] = row.dir[i] * dJ;
+        ja[i] = -jb[i];
+      }
+      joint.b.applyImpulse(jb, row.rB, true);
+      joint.a.applyImpulse(ja, row.rA, true);
+    } else {
+      const dl = s.dl;
+      for (let p = 0; p < k; p += 1) dl[p] = row.axis[p] * dJ;
+      joint.b.applyTorqueImpulse(dl, true);
+      for (let p = 0; p < k; p += 1) dl[p] = -dl[p];
+      joint.a.applyTorqueImpulse(dl, true);
+    }
+  }
+  /**
+   * Applies the impulse of the last step again, before the main loop. A joint
+   * then holds with far fewer turns of the loop.
+   *
+   * A joint keeps its impulses on its own rows, thus it needs no cache. A
+   * contact needs `World.applyWarmStartCache`, because the narrow phase builds
+   * a new contact in each step.
+   */
+  function warmStartJoint(D, joint) {
+    for (let c = 0; c < joint.rows.length; c += 1) {
+      const row = joint.rows[c];
+      if (row.km > 0 && row.impulse !== 0) applyRow(D, joint, row, row.impulse);
+    }
+  }
+  /**
+   * One turn of the solver on one joint. Call it many times.
+   *
+   * For each row it finds the velocity of the row, and it applies the impulse
+   * that brings that velocity to `bias`. It holds the TOTAL impulse between
+   * `lower` and `upper`, and it applies only the change. That clamp on the
+   * total, and not on the change, is what makes the method work.
+   *
+   * A row with `km` at 0 goes away. That is the guard against a division by
+   * zero: two static bodies, a joint from a static body to the world, an
+   * angular row on a body with no inertia, or a distance joint with the two
+   * anchors at the same point. One NaN would poison the whole world in one
+   * step.
+   */
+  /**
+   * Adds the violated angular speed of each row to the drift of that row. Call
+   * this one time in each substep, AFTER the solver and BEFORE
+   * `integratePositions`, thus `w` and `axis` are the values that the
+   * integrator will use.
+   *
+   * WHY A DRIFT AND NOT A GEOMETRIC ERROR. A lock that leaves two or more
+   * planes free has no geometric error that means anything. `SO(n)` is not
+   * abelian, thus "the rotation in the plane p" is not defined for a general
+   * rotation: a turn of 1.0 in the plane `(x y)` and of 1.0 in the plane
+   * `(y z)` reads 0.919 in the plane `(x z)`, and the reading changes with the
+   * order of the two turns. No logarithm can take that away. The integral of
+   * the violated speed IS defined, and it is what the constraint means.
+   *
+   * The axis turns during the step, thus the value is correct to the first
+   * order only. See ND-PHYSICS.md, B8.
+   */
+  function accumulateDrift(D, joint, dt) {
+    if (!joint.useDrift) return;
+    const { k } = D;
+    const a = joint.a;
+    const b = joint.b;
+    for (let c = 0; c < joint.rows.length; c += 1) {
+      const row = joint.rows[c];
+      if (row.kind !== "angular" || row.km <= 0) continue;
+      if (joint.planeLocal !== null && c >= joint.rows.length - 2) continue;
+      let cv = 0;
+      for (let p = 0; p < k; p += 1) cv += (b.w[p] - a.w[p]) * row.axis[p];
+      row.drift += cv * dt;
+    }
+  }
+  /**
+   * Measures the load that a joint carries, and says if the joint must break.
+   *
+   * It gives the length of the impulse of the linear rows and the length of the
+   * impulse of the angular rows, and it puts the two values on the joint.
+   *
+   * IT COMPARES A FORCE AND A TORQUE, and not an impulse. `row.impulse` is the
+   * impulse of ONE substep, thus a limit on it would mean something different
+   * when you change `subSteps`. `impulse / dt` is a force, and it does not
+   * change.
+   *
+   * The two values stay apart because an impulse and an angular impulse do not
+   * have the same units, and one length of the two together has no meaning. A
+   * lock of the rotation has no linear row, and it needs `breakTorque`.
+   *
+   * THE ROW OF THE MOTOR DOES NOT COUNT. A motor that pushes against its own
+   * limit carries a large impulse by design, and it would break its own joint.
+   * The row of the limit does count, because it is a true load.
+   *
+   * A value of 0 means "never break", thus no `Infinity` goes in a message.
+   */
+  function jointStress(D, joint, dt) {
+    const rows = joint.rows;
+    const motorAt = joint.planeLocal !== null ? rows.length - 2 : -1;
+    let lin = 0;
+    let ang = 0;
+    for (let c = 0; c < rows.length; c += 1) {
+      if (c === motorAt) continue;
+      const j = rows[c].impulse;
+      if (rows[c].kind === "linear") lin += j * j;
+      else ang += j * j;
+    }
+    joint.linearImpulse = Math.sqrt(lin);
+    joint.angularImpulse = Math.sqrt(ang);
+    return joint.breakForce > 0 && joint.linearImpulse > joint.breakForce * dt || joint.breakTorque > 0 && joint.angularImpulse > joint.breakTorque * dt;
+  }
+  function solveJoint(D, joint) {
+    const { n, k } = D;
+    const s = jointScratch(D);
+    const a = joint.a;
+    const b = joint.b;
+    for (let c = 0; c < joint.rows.length; c += 1) {
+      const row = joint.rows[c];
+      if (row.km <= 0) continue;
+      let cv = 0;
+      if (row.kind === "linear") {
+        const ua = a.pointVelocity(row.rA, s.va);
+        const ub = b.pointVelocity(row.rB, s.vb);
+        for (let i = 0; i < n; i += 1) cv += (ub[i] - ua[i]) * row.dir[i];
+      } else {
+        for (let p = 0; p < k; p += 1) cv += (b.w[p] - a.w[p]) * row.axis[p];
+      }
+      let dJ = -row.massScale * (cv - row.bias) / row.km - row.impulseScale * row.impulse;
+      const old = row.impulse;
+      let total = old + dJ;
+      if (total < row.lower) total = row.lower;
+      if (total > row.upper) total = row.upper;
+      row.impulse = total;
+      dJ = total - old;
+      if (dJ !== 0) applyRow(D, joint, row, dJ);
+    }
+  }
   // src/nd/world.js
   /**
    * The tolerances of the world. Give your own values in
@@ -3734,6 +4847,41 @@
     /** The most contacts of one pair. `World` changes 0 into `2^(n-1)`. */
     maxContacts: 0,
     // zero means 2^(n-1)
+    // constraint
+    /**
+     * How much of the error of a joint the solver corrects in one step, 0 to 1.
+     * A large value closes a joint fast, but it can add energy. This is not
+     * `biasFactor`: that value is for the push-out of a contact.
+     */
+    constraintBias: 0.2,
+    /** An error of a joint that the solver accepts. It stops a joint from shaking. */
+    constraintSlop: 1e-3,
+    /**
+     * The largest speed that the bias of a joint asks for. Without this limit a
+     * body that a teleport moves a long way gets a very large velocity, because
+     * the bias is the error divided by the time of the step.
+     */
+    constraintMaxBias: 10,
+    /**
+     * Below this length a direction of a joint is not defined, and the solver
+     * leaves that row out. The value is also the shortest vector that the
+     * complement basis of a hinge accepts.
+     */
+    constraintTolerance: 1e-6,
+    /**
+     * The frequency of the softness of a joint, in Hz. 0 makes a rigid joint,
+     * and the joint then uses `constraintBias`. A small value makes a soft
+     * joint that can stretch, and the stiffness does not change with the
+     * length of the step. See ND-PHYSICS.md, B9.
+     */
+    constraintHertz: 0,
+    /** The damping ratio of the softness. 1 gives no overshoot. */
+    constraintDamping: 1,
+    /**
+     * The largest part of the rate of a substep that the softness may use. A
+     * frequency above this is not stable, and the solver holds it here.
+     */
+    constraintHertzRatio: 0.25,
     // rotor
     /**
      * The error of the rotor that starts a repair. See `rotorCorrect`. A large
@@ -3787,30 +4935,122 @@
       else this.gravity[1] = -9.81;
       this.bodies = [];
       this.contacts = [];
+      this.constraints = [];
       this.manifolds = /* @__PURE__ */ new Map();
       this.time = 0;
-      this.listeners = { collision: [] };
+      this.listeners = { collision: [], constraintBroken: [] };
+      this._noCollide = /* @__PURE__ */ new Set();
+      this._islandRoot = new Int32Array(0);
+      this._islandTimer = new Float64Array(0);
+      this._islandOk = new Uint8Array(0);
     }
     /** Adds a body that you built. It gives that body. */
     addBody(body) {
       this.bodies.push(body);
       return body;
     }
-    /** Takes a body out of the world. It does nothing when the body is not in it. */
+    /**
+     * Takes a body out of the world. It does nothing when the body is not in it.
+     *
+     * It also takes out each constraint that holds the body. A constraint that
+     * stays would pull a body that nothing integrates, and the momentum would
+     * come from nothing.
+     */
     removeBody(body) {
       const i = this.bodies.indexOf(body);
       if (i >= 0) this.bodies.splice(i, 1);
+      let dropped = false;
+      for (let c = this.constraints.length - 1; c >= 0; c -= 1) {
+        const j = this.constraints[c];
+        if (j.a === body || j.b === body) {
+          this.constraints.splice(c, 1);
+          dropped = true;
+        }
+      }
+      if (dropped) this._rebuildNoCollide();
     }
     /** Makes a body with the options of `Body`, and adds it. It gives the body. */
     createBody(opts) {
       return this.addBody(new Body(this.D, opts));
+    }
+    /**
+     * Adds a constraint that `createConstraint` built. It gives that constraint.
+     * See ND-PHYSICS.md, A13.
+     */
+    addConstraint(joint) {
+      this.constraints.push(joint);
+      if (!joint.collideConnected) this._rebuildNoCollide();
+      joint.a.wake();
+      joint.b.wake();
+      return joint;
+    }
+    /** Makes a constraint with the options of `createConstraint`, and adds it. */
+    createConstraint(def, a, b) {
+      return this.addConstraint(createConstraint(this.D, def, a, b, this.params));
+    }
+    /** Takes a constraint out of the world. */
+    removeConstraint(joint) {
+      const i = this.constraints.indexOf(joint);
+      if (i < 0) return;
+      this.constraints.splice(i, 1);
+      this._rebuildNoCollide();
+    }
+    /**
+     * Puts `next` in the place of `old`, in the bodies and in the constraints.
+     *
+     * `setMass` builds a new `Body`, because the inertia comes from the mass at
+     * build time. A constraint that keeps the old body would then pull a body
+     * that is not in the world.
+     */
+    replaceBody(old, next) {
+      const i = this.bodies.indexOf(old);
+      if (i >= 0) this.bodies[i] = next;
+      else this.bodies.push(next);
+      for (const j of this.constraints) {
+        if (j.a === old) j.a = next;
+        if (j.b === old) j.b = next;
+        if (j.a === next || j.b === next) resetConstraint(j);
+      }
+      this._rebuildNoCollide();
+    }
+    /**
+     * The constraints that the solver must work on in this step. It leaves out
+     * a constraint that is off, and a constraint whose bodies are all static or
+     * asleep. It wakes the partner of a body that is awake.
+     */
+    activeConstraints() {
+      const out = [];
+      for (const j of this.constraints) {
+        if (!j.enabled) continue;
+        const liveA = !j.a.isStatic && !j.a.sleeping;
+        const liveB = !j.b.isStatic && !j.b.sleeping;
+        if (!liveA && !liveB) continue;
+        if (j.a.sleeping) j.a.wake();
+        if (j.b.sleeping) j.b.wake();
+        out.push(j);
+      }
+      return out;
+    }
+    /** Builds the set of the pairs of ids that must not touch. */
+    _rebuildNoCollide() {
+      this._noCollide.clear();
+      for (const j of this.constraints) {
+        if (j.collideConnected) continue;
+        const lo = Math.min(j.a.id, j.b.id);
+        const hi = Math.max(j.a.id, j.b.id);
+        this._noCollide.add(`${lo}:${hi}`);
+      }
     }
     /** Sets the gravity, of length `n`, and wakes all of the bodies. */
     setGravity(g) {
       this.gravity.set(g);
       for (const b of this.bodies) b.wake();
     }
-    /** Adds a listener. The world sends `collision` and `stepStart`. */
+    /**
+     * Adds a listener. The world sends `collision`, `stepStart` and
+     * `constraintBroken`. `constraintBroken` gives the joint, and the world has
+     * already taken that joint out when the event goes out.
+     */
     on(name, fn) {
       (this.listeners[name] = this.listeners[name] || []).push(fn);
     }
@@ -3827,13 +5067,15 @@
      * the inner loop at the first box that starts after it.
      *
      * It drops a pair of two static bodies, and a pair in which no body is
-     * awake.
+     * awake. It also drops a pair that a constraint holds together, because
+     * `collideConnected` is false by default.
      *
      * @returns {Body[][]} the pairs whose boxes overlap
      */
     broadPhase() {
       const { n } = this;
       const margin = this.params.contactMargin;
+      const noCollide = this._noCollide.size > 0 ? this._noCollide : null;
       const items = [];
       for (const b of this.bodies) {
         const box = b.aabb(margin);
@@ -3849,6 +5091,11 @@
           if (A.b.isStatic && B.b.isStatic) continue;
           if (A.b.sleeping && B.b.sleeping) continue;
           if (A.b.sleeping && B.b.isStatic || B.b.sleeping && A.b.isStatic) continue;
+          if (noCollide) {
+            const lo = Math.min(A.b.id, B.b.id);
+            const hi = Math.max(A.b.id, B.b.id);
+            if (noCollide.has(`${lo}:${hi}`)) continue;
+          }
           let hit = true;
           for (let t = 1; t < n; t += 1) {
             if (A.min[t] > B.max[t] || B.min[t] > A.max[t]) {
@@ -3927,15 +5174,33 @@
      *   3. Find the contacts.                      `narrowPhase`
      *   4. Wake the bodies, and send `collision`.
      *   5. Copy the impulses of the last step.     `applyWarmStartCache`
-     *   6. Build the contacts for the solver.      `prepareContact`
-     *   7. Apply the old impulses again.           `warmStart`
-     *   8. The main solver loop.                   `solveContact`
-     *   9. The extra pass for a stack.             `shockPropagation`
-     *  10. The velocities change the positions.    `integratePositions`
-     *  11. Sleep.
+     *   6. Build the rows of the joints.           `prepareRows`
+     *   7. Build the contacts for the solver.      `prepareContact`
+     *   8. Apply the old impulses again.           `warmStartJoint`, `warmStart`
+     *   9. The main solver loop.            `solveJoint`, `solveContact`
+     *  10. The extra pass for a stack.             `shockPropagation`
+     *  11. One more pass on the joints.            `solveJoint`
+     *  12. Add up the drift of the joints.          `accumulateDrift`
+     *  13. Break the joints that carry too much.    `jointStress`
+     *  14. The velocities change the positions.    `integratePositions`
+     *  15. Sleep.
      *
      * The main loop changes its direction at each turn. That takes away the
      * effect of the order of the contacts, and a stack then rests level.
+     *
+     * The joints go before the contacts on an even turn, and after them on an
+     * odd turn. The odd turn is then a true reversal of the even turn. A block
+     * of joints that always stays at the same end would leave the same bias
+     * that the change of direction takes away. And a contact is an inequality,
+     * thus its clamp runs last on the even turn: a body that a joint pushes
+     * into the ground goes back out there.
+     *
+     * Step 11 is necessary because `shockPropagation` makes the impulses of the
+     * contacts zero and solves them again with false masses. That pass can pull
+     * a joint open, after the main loop has closed it. The extra pass keeps the
+     * impulses of the joints, thus it costs almost nothing.
+     *
+     * With no joint the work is the same as it was before the joints existed.
      */
     subStep(dt) {
       const { D, params } = this;
@@ -3945,14 +5210,17 @@
       this.contacts = contacts;
       for (const c of contacts) {
         if (c.depth > 0) {
-          if (!c.a.isStatic && c.b.sleeping === false) c.a.wake();
-          if (!c.b.isStatic && c.a.sleeping === false) c.b.wake();
+          if (c.a.sleeping && !c.b.isStatic && !c.b.sleeping) c.a.wake();
+          if (c.b.sleeping && !c.a.isStatic && !c.a.sleeping) c.b.wake();
           this.emit("collision", c.a, c.b, c);
         }
       }
+      const joints = this.constraints.length > 0 ? this.activeConstraints() : this.constraints;
       if (params.useWarmStart) this.applyWarmStartCache(contacts);
+      for (let i = 0; i < joints.length; i += 1) prepareRows(D, joints[i], dt, params);
       for (const c of contacts) prepareContact(D, c, dt, params);
       if (params.useWarmStart) {
+        for (let i = 0; i < joints.length; i += 1) warmStartJoint(D, joints[i]);
         for (const c of contacts) {
           if (c.oldTangent && c.oldTangent.length === c.tangentImpulse.length) {
             c.tangentImpulse.set(c.oldTangent);
@@ -3962,44 +5230,129 @@
       }
       for (let it = 0; it < params.iterations; it += 1) {
         if ((it & 1) === 0) {
+          for (let i = 0; i < joints.length; i += 1) solveJoint(D, joints[i]);
           for (let i = 0; i < contacts.length; i += 1) solveContact(D, contacts[i]);
         } else {
           for (let i = contacts.length - 1; i >= 0; i -= 1) solveContact(D, contacts[i]);
+          for (let i = joints.length - 1; i >= 0; i -= 1) solveJoint(D, joints[i]);
         }
       }
       if (params.useShockPropagation && contacts.length > 0) {
         buildContactGraph(this.bodies, contacts);
         shockPropagation(D, contacts, dt, params);
+        for (let i = 0; i < joints.length; i += 1) solveJoint(D, joints[i]);
+      }
+      for (let i = 0; i < joints.length; i += 1) accumulateDrift(D, joints[i], dt);
+      let broken = null;
+      for (let i = 0; i < joints.length; i += 1) {
+        if (jointStress(D, joints[i], dt)) {
+          if (broken === null) broken = [];
+          broken.push(joints[i]);
+        }
+      }
+      if (broken !== null) {
+        for (let i = 0; i < broken.length; i += 1) {
+          const j = broken[i];
+          this.removeConstraint(j);
+          j.a.wake();
+          j.b.wake();
+          this.emit("constraintBroken", j);
+        }
       }
       for (const b of this.bodies) integratePositions(D, b, dt, params);
-      if (params.allowSleep) this.updateSleep(dt);
+      if (params.allowSleep) this.updateSleep(dt, contacts);
       this.time += dt;
     }
     /**
      * Puts a body to sleep after it is almost still for `params.sleepTime`
      * seconds. A sleeping body does not move, and the broad phase drops it.
      * A contact with an awake body, or any force, wakes it again.
+     *
+     * THE BODIES SLEEP IN ISLANDS. A contact and a joint each join two bodies,
+     * and a whole island sleeps together or none of it sleeps. Without that
+     * rule one box of a stack could sleep while the box under it still moves,
+     * and the stack would come apart. A joint is an edge of the island too,
+     * thus two bodies that a joint holds always sleep at the same time, even
+     * when no contact joins them.
+     *
+     * A static body is in no island. The ground touches everything, and it
+     * would make one island of the whole world.
      */
-    updateSleep(dt) {
+    updateSleep(dt, contacts) {
       const { n, k } = this.D;
+      const bodies = this.bodies;
+      const count = bodies.length;
+      if (this._islandRoot.length < count) {
+        this._islandRoot = new Int32Array(count);
+        this._islandTimer = new Float64Array(count);
+        this._islandOk = new Uint8Array(count);
+      }
+      const root = this._islandRoot;
+      const timer = this._islandTimer;
+      const ok = this._islandOk;
+      for (let i = 0; i < count; i += 1) {
+        bodies[i]._island = i;
+        root[i] = i;
+      }
+      const find = (x) => {
+        let r = x;
+        while (root[r] !== r) {
+          root[r] = root[root[r]];
+          r = root[r];
+        }
+        return r;
+      };
+      const union = (x, y) => {
+        const rx = find(x);
+        const ry = find(y);
+        if (rx !== ry) root[rx] = ry;
+      };
+      // A contact and a joint each join two bodies into one island. A static
+      // body joins nothing: the ground would then make one island of the whole
+      // world, and nothing would ever sleep.
+      if (contacts) {
+        for (let c = 0; c < contacts.length; c += 1) {
+          const p = contacts[c];
+          if (!p.a.isStatic && !p.b.isStatic) union(p.a._island, p.b._island);
+        }
+      }
+      for (let c = 0; c < this.constraints.length; c += 1) {
+        const j = this.constraints[c];
+        if (!j.enabled) continue;
+        if (!j.a.isStatic && !j.b.isStatic) union(j.a._island, j.b._island);
+      }
+      // The timer of each body, then the smallest timer of each island.
       const lv = this.params.sleepLinearVelocity ** 2;
       const av = this.params.sleepAngularVelocity ** 2;
-      for (const b of this.bodies) {
-        if (b.isStatic || !b.allowSleep) continue;
-        let s = 0;
-        for (let i = 0; i < n; i += 1) s += b.v[i] * b.v[i];
-        let a = 0;
-        for (let p = 0; p < k; p += 1) a += b.w[p] * b.w[p];
-        if (s < lv && a < av) {
-          b.sleepTimer += dt;
-          if (b.sleepTimer > this.params.sleepTime) {
-            b.sleeping = true;
-            b.v.fill(0);
-            b.L.fill(0);
-            b.w.fill(0);
-          }
-        } else {
-          b.sleepTimer = 0;
+      for (let i = 0; i < count; i += 1) {
+        timer[i] = Infinity;
+        ok[i] = 1;
+      }
+      for (let i = 0; i < count; i += 1) {
+        const b = bodies[i];
+        if (b.isStatic) continue;
+        let sv = 0;
+        for (let x = 0; x < n; x += 1) sv += b.v[x] * b.v[x];
+        let sw = 0;
+        for (let p = 0; p < k; p += 1) sw += b.w[p] * b.w[p];
+        b.sleepTimer = sv < lv && sw < av ? b.sleepTimer + dt : 0;
+        const r = find(i);
+        if (b.sleepTimer < timer[r]) timer[r] = b.sleepTimer;
+        if (!b.allowSleep) ok[r] = 0;
+      }
+      // A whole island sleeps together, or none of it sleeps.
+      const need = this.params.sleepTime;
+      for (let i = 0; i < count; i += 1) {
+        const b = bodies[i];
+        if (b.isStatic) continue;
+        const r = find(i);
+        const rest = ok[r] === 1 && timer[r] > need;
+        if (rest && !b.sleeping) {
+          b.sleeping = true;
+          b.v.fill(0);
+          b.L.fill(0);
+          b.w.fill(0);
+        } else if (!rest && b.sleeping) {
           b.sleeping = false;
         }
       }
@@ -4297,6 +5650,10 @@
   //     [1]    the count of the contacts
   //     then, for each contact:  id of a, id of b, normal (n), point (n), depth
   //
+  // A JOINT SENDS NO REPORT. A third report would give a third stride to keep
+  // in agreement, and the plugin does not need the impulse of a joint. The
+  // state of a body that a joint holds comes back in the world report.
+  //
   // A message that is not a `Float32Array` is a command object,
   // `{ cmd, params }`.
   /** The first number of a binary report. It says which report it is. */
@@ -4304,13 +5661,16 @@
   /**
    * Makes the engine. It holds a `World`, and it obeys the commands.
    *
-   * The commands: `init`, `addBody`, `removeBody`, `updateTransform`,
+   * The commands: `init`, `addBody`, `removeBody`, `addConstraint`,
+   * `removeConstraint`, `setConstraintParams`, `updateTransform`,
    * `setGravity`, `setFixedTimeStep`, `setParams`, `setLinearVelocity`,
    * `setAngularVelocity`, `applyCentralImpulse`, `applyImpulse`,
    * `applyCentralForce`, `applyForce`, `applyTorque`, `setMass`, `simulate`.
    *
    * `simulate` sends the two reports back. `init` and `addBody` send
-   * `worldReady` and `objectReady`. An unknown command sends `unknown`.
+   * `worldReady` and `objectReady`. A joint that the engine cannot build sends
+   * `constraintFailed`, and a joint that breaks sends `constraintBroken`. An
+   * unknown command sends `unknown`.
    *
    * @param {function(*): void} post sends a message back to the plugin
    * @returns {{world: World, handle: function(object): void}} the engine
@@ -4323,6 +5683,7 @@
     let worldReport = null;
     let collisionReport = null;
     const bodies = /* @__PURE__ */ new Map();
+    const constraints = /* @__PURE__ */ new Map();
     const collisions = [];
     let fixedTimeStep = 1 / 60;
     /**
@@ -4428,6 +5789,10 @@
           collisions.push(c);
         });
         world.on("stepStart", () => seen.clear());
+        world.on("constraintBroken", (j) => {
+          constraints.delete(j.id);
+          post({ cmd: "constraintBroken", params: { id: j.id } });
+        });
         post({ cmd: "worldReady" });
       },
       addBody(def) {
@@ -4456,7 +5821,70 @@
         if (b) {
           world.removeBody(b);
           bodies.delete(params.id);
+          for (const [cid, j] of constraints) {
+            if (j.a === b || j.b === b) constraints.delete(cid);
+          }
         }
+      },
+      /**
+       * Adds a joint. `def.a` and `def.b` are the ids of the bodies, and a `b`
+       * that is null makes a joint to the world. See `createConstraint` for the
+       * other fields of `def`.
+       *
+       * The command sends `constraintFailed` when a body is not in the world.
+       * A joint that goes before the body would be lost with no message.
+       */
+      addConstraint(def) {
+        const a = bodies.get(def.a);
+        const b = def.b === void 0 || def.b === null ? null : bodies.get(def.b);
+        if (!a || def.b !== void 0 && def.b !== null && !b) {
+          post({ cmd: "constraintFailed", params: { id: def.id, reason: "the body is not in the world" } });
+          return;
+        }
+        let joint;
+        try {
+          joint = createConstraint(D, def, a, b, world.params);
+        } catch (e) {
+          post({ cmd: "constraintFailed", params: { id: def.id, reason: e.message } });
+          return;
+        }
+        constraints.set(def.id, joint);
+        world.addConstraint(joint);
+      },
+      removeConstraint(params) {
+        const j = constraints.get(params.id);
+        if (j) {
+          world.removeConstraint(j);
+          constraints.delete(params.id);
+        }
+      },
+      /** Changes `enabled`, `collideConnected`, `rest` or `mode` of a joint. */
+      setConstraintParams(params) {
+        const j = constraints.get(params.id);
+        if (!j) return;
+        if (params.enabled !== void 0) {
+          if (params.enabled && !j.enabled) resetConstraint(j);
+          j.enabled = params.enabled;
+        }
+        if (params.rest !== void 0) j.rest = params.rest;
+        if (params.mode !== void 0) j.mode = params.mode;
+        if (params.lowerAngle !== void 0) j.lowerAngle = params.lowerAngle;
+        if (params.upperAngle !== void 0) j.upperAngle = params.upperAngle;
+        if (params.lowerAngle !== void 0 || params.upperAngle !== void 0) {
+          j.hasLimit = j.lowerAngle > -Infinity || j.upperAngle < Infinity;
+        }
+        if (params.motorSpeed !== void 0) j.motorSpeed = params.motorSpeed;
+        if (params.maxMotorTorque !== void 0) j.maxMotorTorque = params.maxMotorTorque;
+        if (params.hertz !== void 0) j.hertz = params.hertz;
+        if (params.damping !== void 0) j.damping = params.damping;
+        if (params.breakForce !== void 0) j.breakForce = params.breakForce;
+        if (params.breakTorque !== void 0) j.breakTorque = params.breakTorque;
+        if (params.collideConnected !== void 0) {
+          j.collideConnected = params.collideConnected;
+          world._rebuildNoCollide();
+        }
+        j.a.wake();
+        j.b.wake();
       },
       updateTransform(params) {
         const b = bodies.get(params.id);
@@ -4465,6 +5893,9 @@
         if (params.rotor) b.R.set(params.rotor);
         b.updateDerived();
         b.wake();
+        for (const j of constraints.values()) {
+          if (j.a === b || j.b === b) resetConstraint(j);
+        }
       },
       setGravity(g) {
         world.setGravity(g);
@@ -4520,8 +5951,7 @@
         nb.R.set(b.R);
         nb.v.set(b.v);
         nb.updateDerived();
-        world.removeBody(b);
-        world.addBody(nb);
+        world.replaceBody(b, nb);
         bodies.set(b.id, nb);
       },
       /**
@@ -4585,6 +6015,7 @@
     PhysiN.nd = nd_exports;
     PhysiN.slice = slice4_exports;
     let nextId2 = 0;
+    let nextJointId = 0;
     /**
      * The event system of physi.js: `addEventListener`,
      * `removeEventListener` and `dispatchEvent`. `Eventable.make(Klass)` puts
@@ -4694,6 +6125,7 @@
         this._n = params.dimensions || 3;
         this._D = dims(this._n);
         this._objects = {};
+        this._constraints = {};
         this._isSimulating = false;
         this._stride = 1 + this._D.n + this._D.r + this._D.n + this._D.k;
         this._contactStride = 2 + this._D.n + this._D.n + 1;
@@ -4743,6 +6175,21 @@
           const o = this._objects[data.params];
           if (o) o.dispatchEvent("ready");
         });
+        return;
+      }
+      if (data && data.cmd === "constraintBroken") {
+        const j = this._constraints[data.params.id];
+        if (j) {
+          delete this._constraints[data.params.id];
+          j.scene = null;
+          later(() => j.dispatchEvent("broken"));
+        }
+        return;
+      }
+      if (data && data.cmd === "constraintFailed") {
+        const j = this._constraints[data.params.id];
+        if (j) delete this._constraints[data.params.id];
+        console.error("PhysiN: the engine did not take the joint " + data.params.id + ": " + data.params.reason);
       }
     };
     /**
@@ -4982,12 +6429,55 @@
         allowSleep: st.allowSleep
       });
     };
-    /** Takes an object out of the scene, and its body out of the engine. */
+    /**
+     * Takes an object out of the scene, and its body out of the engine. It also
+     * takes out each joint that holds the object, because a joint that stays
+     * would pull a body that is not there.
+     */
     PhysiN.Scene.prototype.remove = function(object) {
       THREE.Scene.prototype.remove.call(this, object);
       if (!object._physiN) return;
-      delete this._objects[object._physiN.id];
-      this.execute("removeBody", { id: object._physiN.id });
+      const id = object._physiN.id;
+      delete this._objects[id];
+      for (const key of Object.keys(this._constraints)) {
+        const j = this._constraints[key];
+        if (j.a === object || j.b === object) {
+          delete this._constraints[key];
+          j.scene = null;
+        }
+      }
+      this.execute("removeBody", { id });
+    };
+    /**
+     * Adds a joint. Give a `PhysiN.PointJoint`, `PhysiN.DistanceJoint`,
+     * `PhysiN.FixedJoint`, `PhysiN.HingeJoint` or `PhysiN.SubspaceJoint`.
+     *
+     * CALL THIS AFTER `scene.add` OF THE TWO OBJECTS. The engine builds a joint
+     * from the ids of the bodies, and it does not hold a joint that comes
+     * first.
+     *
+     * @throws {Error} when an object is not in this scene
+     */
+    PhysiN.Scene.prototype.addConstraint = function(joint) {
+      const a = joint.a;
+      const b = joint.b;
+      if (!a || !a._physiN || this._objects[a._physiN.id] !== a) {
+        throw new Error("PhysiN.Scene.addConstraint: call scene.add of the first object first");
+      }
+      if (b && (!b._physiN || this._objects[b._physiN.id] !== b)) {
+        throw new Error("PhysiN.Scene.addConstraint: call scene.add of the second object first");
+      }
+      joint.scene = this;
+      this._constraints[joint.id] = joint;
+      this.execute("addConstraint", joint.toMessage());
+      return joint;
+    };
+    /** Takes a joint out of the scene and out of the engine. */
+    PhysiN.Scene.prototype.removeConstraint = function(joint) {
+      if (this._constraints[joint.id] !== joint) return;
+      delete this._constraints[joint.id];
+      joint.scene = null;
+      this.execute("removeConstraint", { id: joint.id });
     };
     PhysiN.Scene.prototype.setGravity = function(g) {
       this.execute("setGravity", g);
@@ -5401,6 +6891,186 @@
           cells: Int32Array.from(cells)
         };
         this.frustumCulled = false;
+      }
+    };
+    /**
+     * The joint that the five classes below share. It holds the two objects and
+     * the fields of the message, and `Scene.addConstraint` sends it.
+     *
+     * THE ANCHORS ARE ALWAYS IN THE LOCAL FRAME OF THEIR OBJECT. A null second
+     * object makes a joint to the world, and the anchor of the world then takes
+     * the world position of the anchor of the first object.
+     *
+     * The two objects must be in the scene before you add the joint. See
+     * `Scene.addConstraint`.
+     */
+    PhysiN.Constraint = class PhysiNConstraint {
+      /**
+       * @param {string} type point, distance, fixed, hinge or subspace
+       * @param {object} a the first object
+       * @param {object} [b] the second object, or null for the world
+       * @param {object} [opts] the other fields. See `createConstraint`.
+       */
+      constructor(type, a, b, opts = {}) {
+        Eventable.call(this);
+        this.id = nextJointId++;
+        this.type = type;
+        this.a = a;
+        this.b = b || null;
+        this.scene = null;
+        this.opts = opts;
+      }
+      /** The command object that `Scene.addConstraint` sends to the engine. */
+      toMessage() {
+        const m = Object.assign({}, this.opts);
+        m.id = this.id;
+        m.type = this.type;
+        m.a = this.a._physiN.id;
+        m.b = this.b ? this.b._physiN.id : null;
+        if (m.localA) m.localA = Array.from(m.localA);
+        if (m.localB) m.localB = Array.from(m.localB);
+        return m;
+      }
+      /** False leaves the joint out of the solver. It does not take it away. */
+      setEnabled(value) {
+        this.opts.enabled = value;
+        if (this.scene) this.scene.execute("setConstraintParams", { id: this.id, enabled: value });
+      }
+      /** Changes the rest length of a distance joint. */
+      setRestLength(value) {
+        this.opts.rest = value;
+        if (this.scene) this.scene.execute("setConstraintParams", { id: this.id, rest: value });
+      }
+      /**
+       * The two angles of a hinge, in radians. The angle wraps at pi, thus a
+       * limit outside `(-pi, pi)` has no meaning. Give `-Infinity` and
+       * `Infinity` to take the limits away.
+       */
+      setLimits(lowerAngle, upperAngle) {
+        this.opts.lowerAngle = lowerAngle;
+        this.opts.upperAngle = upperAngle;
+        if (this.scene) this.scene.execute("setConstraintParams", { id: this.id, lowerAngle, upperAngle });
+      }
+      /**
+       * The motor of a hinge. `speed` is the angular speed of `b` against `a`
+       * in the free plane, and `maxTorque` is the largest torque that the
+       * motor gives. A torque of 0 turns the motor off.
+       *
+       * The value is a TORQUE and not an impulse, thus the strength of the
+       * motor does not change when you change `subSteps`.
+       */
+      setMotor(speed, maxTorque) {
+        this.opts.motorSpeed = speed;
+        this.opts.maxMotorTorque = maxTorque;
+        if (this.scene) {
+          this.scene.execute("setConstraintParams", { id: this.id, motorSpeed: speed, maxMotorTorque: maxTorque });
+        }
+      }
+      /**
+       * Makes the joint a spring of `hertz` and of that damping ratio. A
+       * `hertz` of 0 makes the joint rigid again. The stiffness does not
+       * change with the length of the step. See README, section 12.
+       */
+      setSoftness(hertz, damping) {
+        this.opts.hertz = hertz;
+        this.opts.damping = damping;
+        if (this.scene) this.scene.execute("setConstraintParams", { id: this.id, hertz, damping });
+      }
+      /**
+       * Breaks the joint when the load goes above `force` newtons or above
+       * `torque` newton metres. A value of 0 means that the joint never breaks.
+       *
+       * A joint that breaks sends the event `broken` and it goes out of the
+       * scene. The two bodies can then touch each other, and they usually
+       * overlap at that moment.
+       */
+      setBreak(force, torque) {
+        this.opts.breakForce = force;
+        this.opts.breakTorque = torque;
+        if (this.scene) {
+          this.scene.execute("setConstraintParams", { id: this.id, breakForce: force, breakTorque: torque });
+        }
+      }
+    };
+    Eventable.make(PhysiN.Constraint);
+    /**
+     * Holds one point of `a` on one point of `b`. This is the joint that
+     * attaches two solids. It takes away `n` degrees of freedom, and it leaves
+     * every rotation free.
+     *
+     *   scene.add(post); scene.add(bob);
+     *   scene.addConstraint(new PhysiN.PointJoint(post, bob, [0, 0, 0], [-2, 0, 0]));
+     */
+    PhysiN.PointJoint = class PhysiNPointJoint extends PhysiN.Constraint {
+      constructor(a, b, localA, localB, opts = {}) {
+        super("point", a, b, Object.assign({}, opts, { localA, localB }));
+      }
+    };
+    /**
+     * Holds the length between one point of `a` and one point of `b`. It takes
+     * away 1 degree of freedom.
+     *
+     * `opts.rest` is the length. The default is the length that the two points
+     * have when the joint starts. `opts.mode` is "rod" (the default, it holds
+     * the length), "rope" (it only stops the length from growing) or "strut"
+     * (it only stops the length from falling).
+     */
+    PhysiN.DistanceJoint = class PhysiNDistanceJoint extends PhysiN.Constraint {
+      constructor(a, b, localA, localB, opts = {}) {
+        super("distance", a, b, Object.assign({}, opts, { localA, localB }));
+      }
+    };
+    /**
+     * Welds `a` to `b`. It takes away `n + k` degrees of freedom, thus 6 in 3
+     * dimensions and 10 in 4 dimensions. The two bodies keep the relation that
+     * they have when the joint starts.
+     */
+    PhysiN.FixedJoint = class PhysiNFixedJoint extends PhysiN.Constraint {
+      constructor(a, b, localA, localB, opts = {}) {
+        super("fixed", a, b, Object.assign({}, opts, { localA, localB }));
+      }
+    };
+    /**
+     * Holds one point, and leaves ONE ROTATION PLANE free. It takes away
+     * `n + k - 1` degrees of freedom: 5 of 6 in 3 dimensions, and 9 of 10 in 4
+     * dimensions.
+     *
+     * `opts.plane` names the free plane in the frame of `a`: a number of the
+     * lexicographic order of the planes, or a bivector of `k` components. In 4
+     * dimensions the plane 0 is `(x y)` and the plane 2 is `(x w)`. See README,
+     * section 9. The plane must be SIMPLE: `e_xy + e_zw` holds two planes and
+     * it is not a hinge, thus the engine refuses it.
+     *
+     * `opts.lowerAngle` and `opts.upperAngle` give the limits, in radians.
+     * `opts.motorSpeed` and `opts.maxMotorTorque` give the motor. Use
+     * `setLimits` and `setMotor` to change them while the world runs.
+     */
+    PhysiN.HingeJoint = class PhysiNHingeJoint extends PhysiN.Constraint {
+      constructor(a, b, localA, localB, opts = {}) {
+        super("hinge", a, b, Object.assign({}, opts, { localA, localB }));
+      }
+    };
+    /**
+     * Holds a body in a subspace of the position, of the rotation, or of the
+     * two. With a null `b` the subspace is a subspace of the world.
+     *
+     * Give `opts.lockAxes` or `opts.freeAxes` for the position, and
+     * `opts.lockPlanes` or `opts.freePlanes` for the rotation. A member of a
+     * list is a number of an axis or of a plane, or a vector.
+     *
+     *   // hold a 4D body on the hyperplane w = 0, and leave x, y and z free
+     *   scene.addConstraint(new PhysiN.SubspaceJoint(body, null, { lockAxes: [3] }));
+     *
+     * `opts.worldFrame` at true holds the directions in the world frame. The
+     * default turns them with `a`.
+     *
+     * A lock of the rotation that leaves TWO OR MORE PLANES FREE holds the
+     * angular velocity only, and it does not correct a drift. See
+     * `angularError`.
+     */
+    PhysiN.SubspaceJoint = class PhysiNSubspaceJoint extends PhysiN.Constraint {
+      constructor(a, b, opts = {}) {
+        super("subspace", a, b, opts);
       }
     };
     return PhysiN;
