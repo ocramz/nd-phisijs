@@ -33,6 +33,8 @@ ACM Transactions on Graphics 39(4), 2020.
 - Collision of hyperboxes, hyperspheres, tori and half spaces.
 - Stacks of bodies, with a contact graph and shock propagation.
 - Friction and restitution.
+- Constraints and joints: a point joint, a distance joint, a weld, a hinge
+  and a lock to a subspace.
 - A three.js plugin, with the same interface as Physijs.
 - A web worker, or the main thread. The same engine code operates in both.
 - A 4D slice, to show a 4D body on the screen.
@@ -117,7 +119,7 @@ The library has no dependencies, and it needs no build. The two files are the
 build.
 
 ```
-npm test          # 13 tests of the two files and the worker protocol
+npm test          # 20 tests of the two files and the worker protocol, then the specs
 ```
 
 The example pages need no server. Open `sandbox.html`, `donuts.html` or
@@ -289,6 +291,16 @@ For 4 dimensions and more, you give the size directly:
 - `new PhysiN.HyperTorusMesh(majorRadius, minorRadius, plane, material, mass, options)`
 - `new PhysiN.HyperMesh(vertices, cells, material, mass)`
 
+Each class takes its count of dimensions from what you give it: a hyperbox
+from the length of its half extents, a half space from the length of its
+normal, and a hypertorus from `options.dimensions`. **A ball gives nothing**,
+because a ball of 3 dimensions and a ball of 5 have the same radius. Thus
+`PhysiN.HyperSphereMesh` waits, and it takes the count of the first
+`setPositionN`, or the count of the scene at `scene.add`. A ball works in a
+scene of any count of dimensions.
+
+`scene.add` throws when the count of the mesh is not the count of the scene.
+
 ### The convex mesh
 
 `PhysiN.ConvexMesh` reads the triangles of the geometry. It removes the
@@ -347,6 +359,131 @@ Put the values on the three.js material:
 ```js
 material._physiN = { friction: 0.7, restitution: 0.05 };
 ```
+
+### The joints
+
+A joint holds two bodies together, or it holds one body to the world. Give a
+null second object for a joint to the world.
+
+**Add the two objects to the scene first.** The engine builds a joint from the
+ids of the two bodies. `addConstraint` throws if an object is not in the scene.
+
+```js
+scene.add(post);
+scene.add(bob);
+const joint = new PhysiN.PointJoint(post, bob, [0, 0, 0], [-2, 0, 0]);
+scene.addConstraint(joint);
+// later
+scene.removeConstraint(joint);
+```
+
+**The anchors are always in the local frame of their body.** In the example the
+anchor of `bob` is 2 units to its left, thus that point of `bob` holds the
+center of `post`, and `bob` hangs 2 units away.
+
+| Class | It holds | It takes away, n = 3 | It takes away, n = 4 |
+|---|---|---|---|
+| `PointJoint(a, b, localA, localB)` | one point on one point | 3 of 6 | 4 of 10 |
+| `DistanceJoint(a, b, localA, localB, opts)` | the length between two points | 1 of 6 | 1 of 10 |
+| `FixedJoint(a, b, localA, localB)` | the point and every plane | 6 of 6 | 10 of 10 |
+| `HingeJoint(a, b, localA, localB, opts)` | the point, and every plane but one | 5 of 6 | 9 of 10 |
+| `SubspaceJoint(a, b, opts)` | the axes and the planes that you name | | |
+
+`DistanceJoint` takes `opts.rest` (the length; the default is the length at the
+start) and `opts.mode`: `"rod"` holds the length, `"rope"` only stops it from
+growing, and `"strut"` only stops it from falling.
+
+**A hinge leaves one rotation PLANE free, and not one axis.** In 3 dimensions
+that is the door hinge that you know: 1 plane of 3. In 4 dimensions it is 1
+plane of 6, thus a 4D hinge holds five planes. `opts.plane` names the free
+plane in the frame of `a`: a number of the lexicographic order, or a bivector
+of `k` components. See section 9.
+
+```js
+// a 4D hinge that turns only in the (x y) plane
+scene.addConstraint(new PhysiN.HingeJoint(a, b, [1, 0, 0, 0], [-1, 0, 0, 0], { plane: 0 }));
+```
+
+The plane must be **simple**: `e_xy + e_zw` holds two planes at the same time
+and it is not a hinge, thus the engine refuses it.
+
+**The limits and the motor of a hinge.** `opts.lowerAngle` and
+`opts.upperAngle` give the two limits in radians, and `opts.motorSpeed` and
+`opts.maxMotorTorque` give the motor. Change them while the world runs with
+`setLimits` and `setMotor`.
+
+```js
+const hinge = new PhysiN.HingeJoint(base, arm, [0, 0, 0], [-1, 0, 0], {
+  plane: 0, lowerAngle: -0.5, upperAngle: 0.5,
+});
+scene.addConstraint(hinge);
+hinge.setMotor(2, 50);       // 2 rad/s, at 50 Nm at the most
+```
+
+The motor takes a **torque** and not an impulse, thus its strength does not
+change when you change `subSteps`. A motor that drives into a limit stalls
+there.
+
+The angle of a hinge wraps at `pi`. A limit outside `(-pi, pi)` has no meaning.
+
+`SubspaceJoint` holds a body in a subspace. Give `opts.lockAxes` or
+`opts.freeAxes` for the position, and `opts.lockPlanes` or `opts.freePlanes`
+for the rotation. `opts.worldFrame` at true holds the directions in the world
+frame; the default turns them with `a`.
+
+```js
+// hold a 4D body on the hyperplane w = 0, and leave x, y and z free
+scene.addConstraint(new PhysiN.SubspaceJoint(body, null, { lockAxes: [3], worldFrame: true }));
+```
+
+Use a subspace joint in the place of `linearFactor` and `angularFactor`. Those
+two masks work on the velocity alone, and they do not correct a drift.
+
+**A joint is soft under a load.** The error of a joint grows with the length of
+a chain and with the ratio of the masses. `iterations` and `subSteps` do
+different work, and which one helps depends on the scene:
+
+| A chain of 10 links, the worst error over 10 s | it 10 | it 100 | 4 sub-steps |
+|---|---|---|---|
+| it starts horizontal, thus it whips | 0.114 | 0.115 | 0.014 |
+| it starts hanging, thus it settles | 0.0014 | 0.00003 | 0.00009 |
+
+`iterations` brings the **velocity** of a row to its target, thus it helps a
+chain that has come to rest. `subSteps` builds the rows again, thus it makes
+the error of the **position** smaller; that is the only thing that helps a
+chain that moves fast. Use `subSteps`, or a shorter `fixedTimeStep`, for a
+scene that moves.
+
+A ratio of the masses of 1000 to 1 needs sub-steps. At one step of 1/120 that
+chain comes apart; with `subSteps: 8` its error is 0.45.
+
+**A soft joint.** Give `opts.hertz` and `opts.damping` to make a joint a spring
+of that frequency. The stiffness then does not change with the length of the
+step, and the joint cannot put energy in. The stretch under a weight is the
+stretch of a spring, `g / (2 pi f)^2`: a mass of 1 kg on a joint of 5 Hz hangs
+9.94 mm low. A `hertz` of 0, the default, makes the joint rigid.
+
+```js
+joint.setSoftness(5, 1);     // 5 Hz, and no overshoot
+joint.setSoftness(0, 1);     // rigid again
+```
+
+**A joint that breaks.** `opts.breakForce` and `opts.breakTorque` take newtons
+and newton metres. A value of 0, the default, means that the joint never
+breaks. A joint that breaks sends the event `broken` and it leaves the scene.
+The two bodies can touch each other after that, and they usually overlap.
+
+```js
+joint.setBreak(500, 0);
+joint.addEventListener('broken', () => console.log('it came apart'));
+```
+
+The limit of a hinge counts toward the load, and the motor does not. Thus a
+motor never breaks its own joint, but a motor that pushes against a limit puts
+its torque through the limit and can break a joint that is not strong enough.
+
+The two bodies of a joint do not touch each other. Give
+`opts.collideConnected: true` to let them touch.
 
 ---
 
@@ -417,6 +554,16 @@ The integrator calls it when the defect is more than `rotorTolerance`.
 The gyroscopic term makes double rotations very frequently. Thus you cannot
 remove this step from a 4D engine.
 
+**The half turn.** The rebuild takes each axis in turn, and it turns a work
+frame with the same rotor that it puts into the product. A half turn is the
+hard condition for that method, and a body that turns passes through a half
+turn two times in each revolution. The plane of a turn near pi radians is a
+small difference of large numbers: at `pi - 1e-11` it points 1e-4 along an
+axis that is already in its place, and the turn then moves that axis by 2e-4.
+Thus the rebuild makes the plane normal to those axes again, and it takes the
+plane of the axis that comes next when the turn is exactly pi. `ND-PHYSICS.md`,
+B2, gives the three rules.
+
 ---
 
 ## 11. The library without three.js
@@ -466,8 +613,15 @@ in `new PhysiN.Scene({ params: { ... } })`.
 | `contactMargin` | 0.02 | the distance that makes a contact |
 | `restitutionThreshold` | 0.5 | the minimum speed for a bounce |
 | `maxContacts` | 0 | the limit of the contact count. 0 = no limit |
+| `constraintBias` | 0.2 | the correction of the error of a joint |
+| `constraintSlop` | 0.001 | the error of a joint that the solver accepts |
+| `constraintMaxBias` | 10 | the largest speed that the bias of a joint asks for |
+| `constraintTolerance` | 1e-6 | the shortest direction that a joint accepts |
+| `constraintHertz` | 0 | the frequency of a soft joint, in Hz. 0 = rigid |
+| `constraintDamping` | 1 | the damping ratio of a soft joint |
+| `constraintHertzRatio` | 0.25 | the largest part of the rate of a substep that the frequency may use |
 | `rotorTolerance` | 1e-9 | the limit of the rotor defect |
-| `gyroscopic` | true | set it to false to remove the gyroscopic term |
+| `gyroscopic` | true | set it to false to remove the gyroscopic term from the rotor step |
 | `gyroscopicIterations` | 1 | the iteration count of the implicit gyroscopic step |
 | `allowSleep` | true | set it to false to keep all the bodies awake |
 | `sleepLinearVelocity`, `sleepAngularVelocity`, `sleepTime` | 0.03, 0.03, 0.6 | the sleep limits |
@@ -486,12 +640,13 @@ This repository has one test file.
 npm test               # the same as: node test/worker.js
 ```
 
-`test/worker.js` gives 13 tests of the two files and of the message protocol.
+`test/worker.js` gives 20 tests of the two files and of the message protocol.
 It reads `physin.js` and `physin_worker.js` from the disk. Then it connects
 them with a stub Worker. Thus it tests the protocol from end to end. It also
 compares the main thread with the worker: a box comes to rest at the same
-height in the two conditions. The last three tests use four dimensions, and
-they include the slice of a 4D torus.
+height in the two conditions. Sections 3 and 5 use four dimensions, and they
+include the slice of a 4D torus and a subspace joint. Section 4 hangs a
+pendulum on a point joint.
 
 The other tests of the test plan operate on the source tree, and they are not
 in this repository. The full plan has this order:
@@ -513,13 +668,20 @@ in this repository. The full plan has this order:
 The plugin tests use a small stub in the place of three.js. Thus they operate
 in Node, with no browser. `test/worker.js` contains that stub.
 
-### Known effect
+### The angular momentum
 
-The implicit method of the gyroscopic term removes a small quantity of angular
-momentum over a long time. At `dt = 1/120` the loss is near 7%. At `dt = 1/960`
-it is near 1%. This is a property of the method, and it is not a defect in the
-algebra. Use a smaller time step, or set `gyroscopic: false` if your bodies
-have no fast free rotation.
+A body with no torque keeps its angular momentum exactly, in size and in
+direction. The state holds `L` in the world frame, and the engine builds the
+angular velocity again from `L` after each turn of the rotor. Thus the turn of
+the frame is already in the state.
+
+The implicit solve of the Euler equation writes no field of the body. It gives
+the angular velocity at the END of the step, and the engine uses that value
+for the rotor step only. A write of `L` there would count the turn of the
+frame a second time, and the momentum of a free body would turn at the rate
+`[w, L]`. Before, the engine did that: a box of `[1, 0.6, 0.3]` with
+`w = (0.2, 3, 0.1)` turned its momentum by 39 degrees in 2 seconds, at each
+step length.
 
 ---
 
@@ -545,7 +707,14 @@ Do not plan for a large `n`.
 - Collision operates for hyperbox, hypersphere, torus and half space. A torus
   touches a half space and a hypersphere only. A general convex body gives
   mass properties and a display, but not a collision.
-- There are no constraints and no joints.
+- A joint that leaves **two or more rotation planes free** has no geometric
+  error that means anything, because a turn in one plane and a turn in another
+  do not commute. The engine adds up the drift of the velocity in the place of
+  one. That is correct to the first order only.
+- The angle of a hinge wraps at `pi`. A limit outside `(-pi, pi)` has no
+  meaning, and a hinge that turns past `pi` reports a jump.
+- `linearFactor` and `angularFactor` do not work together with a joint on the
+  same body. Use a `SubspaceJoint` in the place of the factor.
 - There are no soft bodies.
 - There is no continuous collision detection. A fast body can go through a
   thin body. Use more sub-steps.

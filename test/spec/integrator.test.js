@@ -171,8 +171,7 @@ describe('the free rotation of a body', () => {
   it('should never gain energy', () => {
     // A body with no torque keeps its kinetic energy. The explicit form of
     // the gyroscopic term adds energy and the body goes faster and faster;
-    // the implicit form of `applyGyroscopic` must not. README section 13 says
-    // that it loses a little, and that is a property of the method.
+    // the implicit form of `gyroscopicSpin` must not.
     fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
       fc.constant(n), anyHalfExtents(n), anyRotor(n), anyAngularVelocity(n),
     )), ([n, h, R, w]) => {
@@ -198,10 +197,10 @@ describe('the free rotation of a body', () => {
     }), { numRuns: 20 });
   });
 
-  it('should almost keep the size of the angular momentum', () => {
-    // The implicit method of the gyroscopic term takes a little of the
-    // angular momentum away. At dt = 1/240 over 2 seconds the loss is less
-    // than one part in a hundred. README section 13 documents this.
+  it('should keep the size of the angular momentum', () => {
+    // The gyroscopic step writes no field of the body, thus a body with no
+    // torque keeps the size of its momentum. The test below keeps the
+    // direction as well. See the note there.
     fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
       fc.constant(n), anyHalfExtents(n), anyRotor(n), anyAngularVelocity(n),
     )), ([n, h, R, w]) => {
@@ -218,49 +217,39 @@ describe('the free rotation of a body', () => {
         nd.integratePositions(D, body, 1 / 240, OPTS);
       }
 
-      // Assert -- the implicit method takes momentum away, and it never adds
-      // any. The quantity that it takes away depends on the body and on the
-      // step; README section 13 gives 7 percent at dt = 1/120 over a long
-      // time. The direction that the method can never take is the one here.
-      assert.ok(norm(body.L) <= before * (1 + 1e-4) + 1e-12,
-        `the size of the angular momentum went from ${before} to ${norm(body.L)}`);
+      // Assert
+      assertClose(norm(body.L), before,
+        'the size of the angular momentum of a free body', 1e-12);
     }), { numRuns: 20 });
   });
 
   /**
-   * A KNOWN DEFECT, that this test found.
+   * WHY THE GYROSCOPIC TERM IS NOT IN `integrateVelocities`.
    *
    * `body.L` is the angular momentum IN THE WORLD FRAME: `updateDerived`
    * builds `w` from it with `w = [R]2 I^-1 [R]2^T L`. A body with no torque
-   * must keep that momentum, in size AND in direction.
+   * must keep that momentum, in size AND in direction. It does, because the
+   * turn of the frame is already in `updateDerived`.
    *
-   * `applyGyroscopic` solves the Euler equation in the body frame, which is
-   * correct, but it then writes the answer back with the rotor of the START
-   * of the step:
-   *
-   *     L_world = [R]2 (I w_body_new)
-   *
-   * `integratePositions` turns the rotor after that, and nothing builds `L`
-   * again from the new rotor. Thus the turn of the frame never takes the
-   * Euler term away, and the world momentum turns at the rate `[w, L]`.
-   *
-   * The measure: the change of `L` in one step is `dt [w, L]` to 4 places.
-   * The error of a step is thus of the order of `dt`, and not of `dt^2`. It
-   * does not go away with a smaller step:
+   * The engine wrote `L_world = [R]2 (I w_body_new)` with the rotor of the
+   * START of the step at the end of the Euler solve. `integratePositions`
+   * turns the rotor after that, thus the turn of the frame came two times,
+   * and the world momentum turned at the rate `[w, L]`. The error of a step
+   * was of the order of `dt`, thus a smaller step did not take it away:
    *
    *     2 s of free rotation, a box of [1, 0.6, 0.3], w = (0.2, 3, 0.1)
-   *     dt = 2/240   the direction of L turns by 39.24 degrees
+   *     dt = 2/240   the direction of L turned by 39.24 degrees
    *     dt = 2/960   by 38.56 degrees
    *     dt = 2/3840  by 38.42 degrees
    *
-   * The size of `L` and the energy stay correct, because a commutator with
-   * `L` is normal to `L`. Thus the two tests above do not see this. Only the
-   * direction is wrong: a body that tumbles takes the wrong way.
+   * The size of `L` and the energy stayed correct, because a commutator with
+   * `L` is normal to `L`. Thus the two tests above did not see it. Only the
+   * direction was wrong: a body that tumbles took the wrong way.
    *
-   * Take the `todo` mark away when the defect is repaired.
+   * `gyroscopicSpin` now writes no field of the body. `integratePositions`
+   * uses its answer for the rotor step only. This test holds that rule.
    */
-  it('should never turn the angular momentum of a body with no torque',
-    { todo: 'the world momentum turns at the rate [w, L] -- see the note above' }, () => {
+  it('should never turn the angular momentum of a body with no torque', () => {
     fc.assert(fc.property(anyN(3, 5).chain((n) => fc.tuple(
       fc.constant(n), anyHalfExtents(n), anyRotor(n), anyAngularVelocity(n),
     )), ([n, h, R, w]) => {
@@ -277,8 +266,9 @@ describe('the free rotation of a body', () => {
         nd.integratePositions(D, body, 1 / 240, OPTS);
       }
 
-      // Assert
-      assertArrayClose(body.L, before, 'the angular momentum of a free body', 1e-2);
+      // Assert -- no field of the body holds the momentum away from `L`, thus
+      // 480 steps change nothing at all. The tolerance is the rounding only.
+      assertArrayClose(body.L, before, 'the angular momentum of a free body', 1e-12);
     }), { numRuns: 10 });
   });
 

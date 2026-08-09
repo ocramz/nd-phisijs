@@ -60,7 +60,8 @@ algebra/       PART A. vector, bivector, rotor, multivector, products
 body/          PART A. mass properties, inertia tensor, state
 integrate/     PART B. time step, gyroscopic term, rotor correction
 detect/        PART A + B. Minkowski difference, separating axis theorem
-resolve/       PART B. impulses, friction, contact graph, shock propagation
+resolve/       PART B. impulses, friction, contact graph, shock propagation,
+               constraints and joints
 slice/         4D only. slice of the mesh, display, user input
 ```
 
@@ -372,6 +373,83 @@ change.
 Gravity and air friction extend to `n` dimensions with no change of form.
 Gravity points along the normal of the ground, towards the ground.
 
+## A13. Constraints and joints
+
+The paper does not give these. This section gives the form that follows from
+A3, A5 and A11.
+
+A constraint is a list of **rows**, and each row takes away one degree of
+freedom. A row is linear or angular. The error and the velocity always measure
+`b` against `a`.
+
+**A linear row.** It holds a unit direction `d` of `n` components at the world
+offsets `rA` and `rB`. Its velocity and its effective mass are
+
+```
+C'   = (v_b + [rB]*^T w_b - v_a - [rA]*^T w_a) . d
+K    = 1/m_a + (rA ^ d) . I'a^-1 (rA ^ d)
+     + 1/m_b + (rB ^ d) . I'b^-1 (rB ^ d)
+```
+
+`K` is the value that A11 gives for a contact, along `d`. Thus a linear row is
+a contact row with no limit of sign. The impulse `j = lambda d` goes to `b` at
+`rB` and `-j` goes to `a` at `rA`, thus it keeps the momentum of the pair.
+
+**An angular row.** It holds a unit bivector `x` of `k` components:
+
+```
+C'   = (w_b - w_a) . x
+K    = x . I'a^-1 x + x . I'b^-1 x
+```
+
+The impulse is a torque impulse `lambda x`, and `-lambda x` goes to `a`.
+
+**The error of the rotation.** A row needs the error of the position of the
+rotation, and not only its velocity. The rotor holds that, but a logarithm of a
+rotor is expensive. Take the antisymmetric part of the relative rotation matrix
+instead. With `Q` the relation of the two bodies at rest,
+
+```
+T    = Rm_a Q                             the rotation that b must have
+M    = Rm_b T^T                           the error rotation, in the world frame
+e[p] = (M[j n + i] - M[i n + j]) / 2      for pairs[p] = [i, j]
+```
+
+`e` is the logarithm of `M` to the first order, and it is a bivector of `k`
+components. It carries the same sign as `w`: a value of more than zero is a
+turn from the axis `i` toward the axis `j`.
+
+**When `e` is exact.** For a **simple** rotation, thus a rotation in one plane,
+`e` holds exactly `sin(angle)` on that plane and 0 on each other plane, at any
+angle. For a rotation in two planes together `e` mixes: a turn of 1.0 in the
+plane `(x y)` and of 1.0 in the plane `(y z)` gives 0.354 on the plane `(x z)`,
+in which nothing turned.
+
+Thus a joint may only use `e` when the part that stays free is one plane or
+nothing, thus when the joint holds `k` or `k - 1` planes. With two or more
+planes free, the joint holds the angular velocity only.
+
+**The five types, and the degrees of freedom that each one takes away.**
+
+| type | linear rows | angular rows | n = 3 | n = 4 |
+|---|---|---|---|---|
+| point | `n` | 0 | 3 of 6 | 4 of 10 |
+| distance | 1 | 0 | 1 of 6 | 1 of 10 |
+| fixed | `n` | `k` | 6 of 6 | 10 of 10 |
+| hinge | `n` | `k - 1` | 5 of 6 | 9 of 10 |
+| subspace | the count that you name | the count that you name | | |
+
+A hinge leaves one rotation **plane** free, and not one axis. In 3D that is 1
+plane of 3, which is the door hinge that you know. In 4D it is 1 of 6, thus a
+hinge takes away 5 angular degrees of freedom. In 2D, `k` is 1, thus a hinge
+has no angular row and it is the same as a point joint.
+
+The angular rows of a hinge are the `k - 1` unit bivectors orthogonal to the
+free plane. There is no axis, and there is no cross product.
+
+The ANGLE of a hinge does not come from the error of this section. It comes
+from `atan2` in the free plane, and that is exact at any angle. See B10.
+
 ---
 
 # PART B — NUMERICS
@@ -386,8 +464,27 @@ Integrate the gyroscopic term of the Euler equation separately, with an
 implicit Euler method (Catto, 2015). The gyroscopic term is the commutator
 term `w × I' w`. It is stiff. An explicit method makes it unstable.
 
-**Note:** the implicit method removes a small quantity of angular momentum over
-long times. This is a known effect. Do not read it as a bug in the algebra.
+**Where the gyroscopic term belongs.** A5 holds `L` in the WORLD frame, and
+`w` comes from `L` with `w = [R]2 I^-1 [R]2^T L` after each turn of the rotor.
+Thus the turn of the frame is already in the state, and `dL/dt = tau` gives a
+free body a momentum that does not change. The implicit solve must therefore
+write NO field of the body. Its answer is `w` at the end of the step, and the
+rotor step uses it:
+
+```
+integrateVelocities   v, L, w = I'^-1 L        (no gyroscopic term)
+solver                impulses -> L, w
+integratePositions    w2 = implicit Euler(w, dt)
+                      R += -(1/2) dt w2 R
+                      w = I'^-1 L              (updateDerived)
+```
+
+A write of `L` at the end of the solve counts the turn of the frame two times.
+The momentum of a free body then turns at the rate `[w, L]`, and the error of
+one step is of the order of `dt`, thus a smaller step does not remove it. The
+size of `L` and the energy stay correct, because a commutator with `L` is
+normal to `L`. Only the direction is wrong. An engine that holds `w` in the
+body frame in the place of `L` does not have this condition.
 
 ## B2. Rotor error correction — critical
 
@@ -410,6 +507,40 @@ The result is always a correct rotation.
 **Caution:** the gyroscopic term makes double rotations very frequently. Thus
 you cannot skip this step in a 4D engine. Put this correction in the numerics
 module, and not in the algebra module.
+
+**The half turn is the hard condition.** The rebuild aligns one axis at a
+time: it turns the column `c` of a work frame on to the column `c` of the
+orthonormal matrix. Three rules hold that method together, and a half turn
+breaks each one of them:
+
+1. **Turn the work frame with the same rotor that goes into the product.** A
+   frame that does not follow gives the turn to the axis that comes next a
+   second time.
+2. **Make the plane normal to the axes that are done.** The plane holds `p`,
+   the column of the work frame, and `q`, the part of the target column that
+   is normal to `p`. `q` is a small difference of large numbers when the angle
+   comes near pi. At an angle of `pi - 1e-11` its part along an axis that is
+   already in its place grows to 1e-4, and a turn of almost pi radians moves
+   that axis by two times as much. Make `q` normal to those columns again
+   before you make its length 1.
+3. **Give the half turn a plane.** When `q` is zero, the target column is `p`
+   or `-p`, and the plane has no meaning. If the two agree there is nothing to
+   do. If they are opposite, take the plane of `p` and the column that comes
+   next in the work frame: that column is normal to `p` and to every axis that
+   is done, by construction.
+
+The shortest rotor between two unit vectors,
+`(1 + b a) / sqrt(2 (1 + a . b))`, has the same limit. It loses all of its
+accuracy as `a . b` comes near -1, because the divisor and the wedge are then
+two small differences of large numbers, and the answer can stop being a unit
+rotor. Build such a turn as two turns, `a` to `-a` and then `-a` to `b`: the
+second has a dot of more than 0. And make the length 1 with the euclidean
+norm, and not with the divisor: a scalar and ONE 2-blade of the length 1 is
+always an exact rotor.
+
+A body that turns passes through a half turn two times in each revolution.
+Thus a test with a uniform angle does not find these conditions. Test with
+angles that come to pi on a ladder, down to the accuracy of the double.
 
 ## B3. Matrix work per step
 
@@ -472,6 +603,193 @@ Put all of these values in the numerics module:
 - rotor factorization threshold (near-identity rotors)
 - velocity thresholds for sleep and for static friction
 - iteration count for the contact solver
+- constraint bias, constraint slop, the largest bias of a constraint, and the
+  shortest direction that a constraint accepts
+- the frequency and the damping ratio of a soft joint, and the largest part of
+  the rate of a substep that the frequency may use
+
+## B8. The constraint solver
+
+The rows of A13 go through the same sequential impulse method as the contacts.
+
+**The bias.** A row drives its velocity toward `-(bias / dt) * error`, and not
+toward zero. That gives back a part of the error in each step. Use a bias of
+the constraints that is separate from the bias of the contacts: 0.2 is tuned
+for the push-out of a contact, and a joint needs its own value.
+
+**The slop.** Make the error smaller by the slop along the direction of the
+whole error vector, and not component by component. A slop on each component
+makes a dead zone in the shape of a box, and the joint is then not the same in
+every direction.
+
+**The limit of the bias.** The bias is an error divided by the time of a step.
+A body that a teleport moves 50 units would ask for 6000 units each second.
+Hold the bias at a largest value.
+
+**The clamps.** Hold the TOTAL impulse of a row between `lower` and `upper`,
+and apply only the change. An equality row has no limit. A rope is a row with
+`upper` at 0, and a strut is a row with `lower` at 0.
+
+**The warm start.** A joint keeps its impulses on its own rows, because a joint
+lives between the steps. A contact needs a cache, because the narrow phase
+builds a new contact in each step.
+
+**The order in the loop.** Solve the joints before the contacts on an even
+turn, and after them on an odd turn. The odd turn is then a true reversal of
+the even turn, thus the change of direction still takes away the effect of the
+order. A contact is an inequality, thus its clamp runs last on the even turn.
+
+**The complement basis must be continuous.** The angular rows of a hinge are
+the complement of the free plane. A basis that comes from the axes at each step
+turns over when the free plane passes a tie in the order of the axes. The
+impulse that the row keeps then goes along a different bivector, and that adds
+energy: a jolt one time in each turn. Start from the basis of the last step,
+and only build a new bivector when an old one is not usable.
+
+**Shock propagation.** That pass makes the impulses of the contacts zero and
+solves them again with false masses, thus it can pull a joint open. Run one
+more pass on the joints after it. Do not put the joints in the contact graph:
+that would change the stacking of every scene.
+
+**The slop and the free directions.** Take the error into the frame of the rows
+first, and only then make it smaller by the slop. A direction that the joint
+leaves free carries an error that grows without limit. That error would make
+the length of the error vector large, and the slop would then do nothing at
+all on the directions that the joint does hold.
+
+**What this method does not give.** The solver works at the velocity level, and
+it holds the lever arms still through a step. The energy therefore falls by an
+amount of the first order in `dt`. It never rises.
+
+**Iterations and sub-steps do different work.** `iterations` brings the
+VELOCITY of a row to its target. `subSteps` builds the rows again, thus it
+makes the error of the POSITION smaller. Which one helps depends on the
+condition of the scene. A chain of 10 links, the largest error over 10 seconds:
+
+| the start | it = 10 | it = 100 | it = 1000 | 4 sub-steps |
+|---|---|---|---|---|
+| horizontal, and it whips | 0.1142 | 0.1146 | 0.1149 | 0.0137 |
+| hanging, and it settles | 0.0014 | 0.000034 | 0.000000 | 0.000089 |
+
+Thus a chain that has come to rest goes to its answer with more iterations,
+and a chain that moves fast does not: there the error comes from the lever
+arms that stay still through the step, and only a shorter step helps. A large
+ratio of the masses also needs sub-steps.
+
+**The drift of a lock that leaves two or more planes free.** Such a lock has no
+geometric error that means anything, because `SO(n)` is not abelian: a turn of
+1.0 in the plane `(x y)` and of 1.0 in the plane `(y z)` reads 0.919 in the
+plane `(x z)`, and the reading changes with the order of the two turns. No
+logarithm can take that away, exact or not.
+
+Integrate the violated speed of the row in the place of it:
+
+```
+drift += ((w_b - w_a) . axis) dt
+```
+
+Add it up AFTER the solver and BEFORE the step of the position, thus `w` and
+`axis` are the values that the integrator uses. The axis turns during the step,
+thus the value is correct to the first order only. A warm start that is off
+must not make the drift zero, and a teleport must.
+
+## B9. Soft constraints
+
+A raw bias of Baumgarte gives a stiffness that changes with the length of the
+step, and it can put energy in. A soft constraint is a spring of a frequency
+that you name, and its stiffness does not change with the step. The method is
+from Erin Catto, "Soft Constraints", GDC 2011.
+
+For each joint, one time in each substep:
+
+```
+om = 2 pi hertz
+a1 = 2 zeta + dt om;  a2 = dt om a1;  a3 = 1 / (1 + a2)
+biasRate = om / a1;  massScale = a2 a3;  impulseScale = a3
+```
+
+The row then solves
+
+```
+dJ = -massScale (C' - bias) / K - impulseScale (the total impulse)
+```
+
+A `hertz` of 0 must give back the rigid solver exactly: `massScale` at 1,
+`impulseScale` at 0, and the old bias rate. Write the line so that a mass scale
+of 1 and an impulse scale of 0 give the same numbers, and not only near ones.
+
+The stretch of a soft joint under a weight follows the formula of a spring:
+`g / (2 pi f)^2`. A mass of 1 kg on a joint of 5 Hz hangs 9.94 mm low. Use this
+to test the three factors, and not only that the joint is stable.
+
+A frequency above about `0.25 / dt` is not stable. Hold it there.
+
+The row of a limit and the row of a motor stay RIGID. A limit that gives way is
+not a limit, and a motor is a source of speed and not a spring.
+
+## B10. The limit and the motor of a hinge
+
+**The angle.** With `Q` the relation of the two bodies at rest, and `(u, v)` an
+orthonormal basis of the free plane turned into the world by `Rm_a`:
+
+```
+M = Rm_b Q^T Rm_a^T
+angle = atan2(v . (M u), u . (M u))
+```
+
+This is EXACT at any angle, and it stays exact when the two bodies also turn in
+other planes. The first-order logarithm of A13 is not exact there; this is,
+because the free part of a hinge is ONE plane, and a rotation in one plane
+commutes with itself. The value wraps at `pi`.
+
+Take `(u, v)` one time, when the joint starts. Build the `n` x `n` antisymmetric
+matrix of the plane bivector, take the column of the largest length as `u`, and
+take `v` as that matrix times `u`. A basis rebuilt at each step would jump when
+the largest column changed.
+
+The plane must be SIMPLE, thus `h ^ h = 0`. In 4 dimensions and more a bivector
+can hold two planes at the same time, for example `e_xy + e_zw`. That is not a
+hinge. Refuse it.
+
+**The limit.** One row on the free plane, on one side only:
+
+| condition | error | lowest | highest |
+|---|---|---|---|
+| angle below the lower limit | `angle - lower` | 0 | +inf |
+| angle above the upper limit | `angle - upper` | -inf | 0 |
+| between the two | the row has no mass, thus it goes away | | |
+
+**The motor.** One row on the free plane, with the target speed as its bias and
+with the clamp `maxMotorTorque * dt`. Use a TORQUE and not an impulse: an
+impulse would make the motor stronger when the count of the sub-steps grew.
+
+Put the motor BEFORE the limit. The solver walks the rows forward, thus the
+limit has the last word and a motor that drives into a limit stalls.
+
+**The two rows are always there**, and they have no mass when they are off. The
+rows of a joint are named by their position, and a count that changes throws
+away every impulse that the joint keeps -- at the moment that a limit engages,
+which is the worst moment.
+
+## B11. Islands and sleep
+
+A body that is almost still for `sleepTime` seconds may sleep. Two rules make
+that work:
+
+**The solver must not reset the timer.** An impulse of a contact or of a row is
+internal, and it holds the body where it is. A wake that resets the timer at
+every turn of the solver means that a box on the ground can never sleep,
+because its contact gives it an impulse in every turn. Give the solver a wake
+that only acts on a body that IS asleep.
+
+**The bodies sleep in islands.** A contact and a joint each join two bodies. A
+whole island sleeps together, or none of it sleeps. Without that rule one box
+of a stack could sleep while the box under it still moves. A joint must be an
+edge of the island too, thus two bodies that a joint holds sleep at the same
+time even when no contact joins them.
+
+A static body is in no island. The ground touches everything, and it would make
+one island of the whole world.
 
 ---
 
@@ -618,6 +936,18 @@ Test the library in this order. Each test uses the layer below it.
    inertia have little effect on this behavior.
 8. **Collision.** Test a hypersphere against a hyperbox. Then test two
    hyperboxes. Then stack three hypercubes and check that the stack is stable.
+9. **The sign of the error of a rotation.** Turn a body by 0.1 in the plane
+   `p`. The error of A13 must give `+sin(0.1)` on that plane and 0 on each
+   other plane. Then hold the body with a weld and solve one time: the angular
+   velocity on that plane must become negative. The first test alone does not
+   find a sign that is wrong only in the bias.
+10. **A joint keeps the momentum.** Put the two anchors of a point joint at the
+   same world point and solve. The linear momentum and the angular momentum of
+   the pair must not change. A lever arm that is wrong breaks the angular part.
+11. **A joint does no work.** With a bias of 0 and no gravity, the energy must
+   never rise, and it must fall half as much when the step is half as long.
+12. **A hinge in 4D.** A hinge on the plane 0 must leave that plane free and
+   hold the other five. Give a torque in every plane at the same time.
 
 ---
 
@@ -629,12 +959,26 @@ Test the library in this order. Each test uses the layer below it.
   bivectors is correct only in 3D. If you find a dual in the code outside of
   the separating axis theorem, it is probably an error.
 - **Sign conventions.** Fix the sign of `dR/dt` and the order of the commutator
-  one time, at the start. Write them in a comment.
+  one time, at the start. Write them in a comment. The error of the rotation of
+  A13 has the same risk: hold its sign with a test on the error, and with a
+  second test on the correction that comes from it.
 - **Basis order.** One lexicographic order for the bivector basis must be used
   in all modules. A different order in one table gives errors that are hard to
   find.
 - **Boundary cases in collision detection.** In 4D the number of boundary
   dimensions is larger than in 3D. Test each dimension.
-- **Not in the paper.** Soft bodies, constraints and joints, continuous
-  collision detection, and non-euclidean spaces. The paper gives these as
-  future work.
+- **Not in the paper.** Soft bodies, continuous collision detection, and
+  non-euclidean spaces. The paper gives these as future work.
+- **The constraints and the joints** are not in the paper either. A13 and B8
+  give the form that this library uses. Their limits:
+  - A lock of the rotation that leaves **two or more planes free** has no
+    geometric error that means anything, thus it adds up the drift of the
+    velocity in the place of one. The drift is correct to the first order
+    only. See A13 and B8.
+  - `effectiveMass` does not use `linearFactor` and `angularFactor`, but the
+    impulse does. A joint on a body with a factor of 0 does not converge. Use a
+    subspace constraint in the place of a factor.
+  - The angle of a hinge wraps at `pi`, thus a limit outside `(-pi, pi)` has no
+    meaning.
+  - A joint sends no report to the plugin. A third report would give a third
+    stride to hold in agreement.

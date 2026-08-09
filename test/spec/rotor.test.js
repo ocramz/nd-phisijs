@@ -285,6 +285,88 @@ describe('rotorExp', () => {
   });
 });
 
+describe('rotorFromBivectorAngle', () => {
+  it('should agree with rotorFromPlane on one plane', () => {
+    // `angle` is the turn of the BODY in the two functions. The exponent holds
+    // the half angle. A full angle in the exponent made `Math.PI` give the
+    // identity, and that made the half turn branch of `rotorBetweenVectors` do
+    // nothing. See the note above `rotorCorrect` below.
+    fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
+      fc.constant(n), anyPlane(n), anyAngle(),
+    )), ([n, [i, j], angle]) => {
+      // Arrange
+      const D = dims(n);
+      const B = new Float64Array(D.k);
+      B[D.biOfBlade[(1 << i) | (1 << j)]] = i < j ? 1 : -1;
+
+      // Act
+      const R = rotor.rotorFromBivectorAngle(D, B, angle);
+
+      // Assert
+      assertArrayClose(R, rotor.rotorFromPlane(D, i, j, angle),
+        'the two ways to name a plane give the same rotor', 1e-12);
+    }));
+  });
+
+  it('should give a half turn at pi', () => {
+    // A half turn is the condition that `rotorCorrect` must hold. Take the
+    // vector back and front: the two must be the same vector with the sign
+    // changed, and not the vector itself.
+    const D = dims(4);
+    const B = new Float64Array(D.k);
+    B[D.biOfBlade[(1 << 0) | (1 << 1)]] = 1;
+
+    // Act
+    const R = rotor.rotorFromBivectorAngle(D, B, Math.PI);
+    const x = rotor.rotorApplyVector(D, R, Float64Array.from([0.6, 0.8, 0, 0]));
+
+    // Assert
+    assertArrayClose(x, [-0.6, -0.8, 0, 0], 'pi turns the vector against itself', 1e-12);
+  });
+});
+
+describe('rotorBetweenVectors', () => {
+  it('should always take the first vector on to the second', () => {
+    // The direct form divides by `sqrt(2 (1 + dot))`, thus it loses all of its
+    // accuracy as the two vectors come near opposite. `rotorCorrect` is the
+    // one caller, and it meets that condition each time a body passes through
+    // a half turn.
+    fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
+      fc.constant(n), anyUnitVector(n), anyUnitVector(n),
+    )), ([n, a, b]) => {
+      // Arrange
+      const D = dims(n);
+
+      // Act
+      const R = rotor.rotorBetweenVectors(D, a, b);
+
+      // Assert
+      assertClose(rotor.rotorNorm(D, R), 1, 'the length of the rotor', 1e-12);
+      assertArrayClose(rotor.rotorApplyVector(D, R, a), b, 'a comes on to b', 1e-9);
+    }));
+  });
+
+  it('should always take a vector on to a vector that is almost opposite', () => {
+    // The hard condition, one axis at a time. The angle comes to pi from an
+    // error of 1e-3 down to 0, and it takes the exact half turn as well.
+    fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
+      fc.constant(n), anyUnitVector(n), anyPlane(n),
+      fc.constantFrom(0, 1e-16, 1e-12, 1e-9, 1e-6, 1e-3),
+    )), ([n, a, [i, j], gap]) => {
+      // Arrange -- turn `a` through `pi - gap` in the plane of the axes i, j.
+      const D = dims(n);
+      const b = rotor.rotorApplyVector(D, rotor.rotorFromPlane(D, i, j, Math.PI - gap), a);
+
+      // Act
+      const R = rotor.rotorBetweenVectors(D, a, b);
+
+      // Assert
+      assertClose(rotor.rotorNorm(D, R), 1, 'the length of the rotor', 1e-12);
+      assertArrayClose(rotor.rotorApplyVector(D, R, a), b, 'a comes on to b', 1e-9);
+    }));
+  });
+});
+
 describe('rotorDefect', () => {
   it('should give zero for the rotor that turns nothing', () => {
     assert.equal(rotor.rotorDefect(dims(4), rotor.rotorIdentity(dims(4))), 0);
@@ -328,27 +410,24 @@ describe('rotorDefect', () => {
 });
 
 /**
- * A KNOWN DEFECT, that these tests found.
+ * THE HALF TURN. These tests found three defects, and they hold the repair.
  *
- * `rotorCorrect` is not correct when a column of the rotation matrix points
- * against the column that it starts from. `rotorBetweenVectors` then takes
- * its "almost opposite" branch, and `rotorCorrect` does not move its work
- * frame `cur`, because the length of `q` is zero. The next column then gets
- * the same turn a second time.
+ *   1. `rotorFromBivectorAngle` put the full angle in the exponent, thus the
+ *      body turned through two times the angle. `Math.PI` gave the identity,
+ *      and the "almost opposite" branch of `rotorBetweenVectors` did nothing.
+ *   2. `rotorCorrect` did not move its work frame `cur` when the length of
+ *      `q` was zero, but it had already put the turn into the product. The
+ *      next column then took the same turn a second time.
+ *   3. The divisor `sqrt(2 (1 + dot))` of `rotorBetweenVectors` loses all of
+ *      its accuracy as `dot` comes near -1. About one of 2000 random rotors
+ *      came back with an orthogonal error of more than 1e-9, which is the
+ *      tolerance that `integratePositions` works with.
  *
- *   rotorCorrect(D, rotorFromPlane(D, 0, 1, Math.PI))  gives the identity
- *
- * Near that condition the divisor `sqrt(2 (1 + dot))` of `rotorBetweenVectors`
- * also loses its accuracy. Thus about one of 2000 random rotors comes back
- * with an orthogonal error of more than 1e-9, which is the tolerance that
- * `integratePositions` works with.
- *
- * The three tests below say what the function must do. They have the `todo`
- * mark, thus they do not stop the suite. Take the mark away when the defect
- * is repaired.
+ * A half turn is thus the condition to test, and not a rare one: a body that
+ * turns passes through it two times in each revolution.
  */
 describe('rotorCorrect', () => {
-  it('should keep a half turn', { todo: 'it gives the identity -- see the note above' }, () => {
+  it('should keep a half turn', () => {
     // Arrange
     const D = dims(3);
     const R = rotor.rotorFromPlane(D, 0, 1, Math.PI);
@@ -362,8 +441,7 @@ describe('rotorCorrect', () => {
       'a half turn must stay a half turn');
   });
 
-  it('should always give a rotor whose matrix is orthogonal',
-    { todo: 'about one of 2000 comes back with an error of more than 1e-9' }, () => {
+  it('should always give a rotor whose matrix is orthogonal', () => {
     // From any element of the even sub algebra, good or bad.
     fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(fc.constant(n), anyEvenUnit(n))),
       ([n, R]) => {
@@ -379,8 +457,7 @@ describe('rotorCorrect', () => {
       }));
   });
 
-  it('should almost do nothing to a rotor that is already correct',
-    { todo: 'it moves a body near a half turn -- see the note above' }, () => {
+  it('should almost do nothing to a rotor that is already correct', () => {
     // The repair runs after a step. It must not move a body that is good.
     fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
       fc.constant(n), anyRotor(n), anyUnitVector(n),
@@ -392,12 +469,43 @@ describe('rotorCorrect', () => {
       const C = rotor.rotorCorrect(D, R);
 
       // Assert -- compare the turn, because R and -R are the same rotation.
-      // The tolerance is 1e-6 and not 1e-9: near a half turn the plane of
-      // `rotorBetweenVectors` is almost not defined, and the repair is less
-      // accurate there. fast-check finds those angles.
       assertArrayClose(rotor.rotorApplyVector(D, C, x), rotor.rotorApplyVector(D, R, x),
-        'the repair does not turn the body', 1e-6);
+        'the repair does not turn the body', 1e-9);
     }));
+  });
+
+  it('should not move an axis that is in its place when a turn is near pi', () => {
+    // The hard condition, and the reason for the orthogonalization of `q` in
+    // step 3. `anyAngle` is uniform, thus it almost never gives an angle at
+    // 1e-11 from pi, and a uniform test does not find this. Here the angles
+    // come to pi on a ladder.
+    //
+    // With no orthogonalization the repair moved the body by 1e-4 at n = 4.
+    fc.assert(fc.property(fc.integer({ min: 2, max: 5 }).chain((n) => fc.tuple(
+      fc.constant(n),
+      fc.array(fc.tuple(
+        anyPlane(n),
+        fc.constantFrom(0, 1e-16, 1e-13, 1e-11, 1e-9, 1e-6, 1e-3, 0.05, 0.2),
+        fc.boolean(),
+      ), { minLength: 1, maxLength: 4 }),
+      anyUnitVector(n),
+    )), ([n, list, x]) => {
+      // Arrange
+      const D = dims(n);
+      let R = rotor.rotorIdentity(D);
+      for (const [[i, j], gap, back] of list) {
+        const angle = back ? -(Math.PI - gap) : Math.PI - gap;
+        R = rotor.rotorMul(D, rotor.rotorFromPlane(D, i, j, angle), R);
+      }
+
+      // Act
+      const C = rotor.rotorCorrect(D, R);
+
+      // Assert
+      assert.ok(orthogonalError(rotor.rotorMatrix(D, C), n) < 1e-9, 'the matrix is orthogonal');
+      assertArrayClose(rotor.rotorApplyVector(D, C, x), rotor.rotorApplyVector(D, R, x),
+        'the repair does not turn the body', 1e-9);
+    }), { numRuns: 500 });
   });
 
   it('should never change the sign of a rotor', () => {
@@ -418,8 +526,7 @@ describe('rotorCorrect', () => {
       }));
   });
 
-  it('should keep a rotor correct after 200 products',
-    { todo: 'the repair loses its accuracy near a half turn -- see the note above' }, () => {
+  it('should keep a rotor correct after 200 products', () => {
     // Item 2 of the test plan of PART E: the rotor closure. Each product adds
     // a little error. The repair must take all of it away.
     fc.assert(fc.property(fc.integer({ min: 3, max: 5 }).chain((n) => fc.tuple(

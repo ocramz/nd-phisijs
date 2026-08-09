@@ -218,7 +218,7 @@ describe('commutator', () => {
 
 describe('commutatorMatrix', () => {
   it('should always agree with the commutator', () => {
-    // `applyGyroscopic` needs the matrix form for its Newton method.
+    // `gyroscopicSpin` needs the matrix form for its Newton method.
     fc.assert(fc.property(anyN(2, 5).chain((n) => fc.tuple(
       fc.constant(n), anyBivector(n), anyBivector(n),
     )), ([n, X, B]) => {

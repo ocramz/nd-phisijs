@@ -256,30 +256,24 @@ describe('World.updateSleep', () => {
   });
 
   /**
-   * A KNOWN DEFECT, that this test found.
+   * THIS DEFECT IS REPAIRED. The note stays, because the cause is easy to put
+   * back by accident.
    *
-   * A body that rests on the ground never goes to sleep. `subStep` wakes the
-   * two bodies of each contact that has a depth of more than zero:
+   * A body that rested on the ground never went to sleep. Two things did it:
    *
-   *     if (!c.b.isStatic && c.a.sleeping === false) c.b.wake();
+   *   - `subStep` woke the two bodies of every contact, and a static body
+   *     always has `sleeping === false`, thus the ground woke the box above it
+   *     in every step. Now only a body that IS asleep gets woken, and only by
+   *     an awake dynamic partner.
+   *   - The solver calls `applyImpulse`, which called `wake()`, which makes the
+   *     sleep timer zero. A box on the ground takes an impulse in every turn of
+   *     the solver, thus its timer never came to `sleepTime`. The solver now
+   *     calls `Body.touch()`, which only wakes a body that sleeps.
    *
-   * A static body always has `sleeping === false`, because nothing ever puts
-   * a static body to sleep. Thus the ground wakes the body above it in each
-   * step, `wake()` makes the sleep timer zero, and the timer never comes to
-   * `sleepTime`.
-   *
-   * The measure: a box on the ground, at rest with a speed of 6e-6 (the limit
-   * `sleepLinearVelocity` is 0.03), has a sleep timer of 0.008 seconds -- one
-   * step -- after 600 steps. A stack of two boxes does the same.
-   *
-   * Thus `allowSleep` does nothing for the one condition that it is for: a
-   * body that rests. The world keeps integrating and solving it for ever.
-   * This costs speed, and it does not make the answer wrong.
-   *
-   * Take the `todo` mark away when the defect is repaired.
+   * The bodies also sleep in islands now: a contact and a joint each join two
+   * bodies, and a whole island sleeps together.
    */
-  it('should let a body that rests on the ground go to sleep',
-    { todo: 'the static ground wakes the body in each step -- see the note above' }, () => {
+  it('should let a body that rests on the ground go to sleep', () => {
     // Arrange
     const D = dims(3);
     const world = new nd.World({ dimensions: 3, gravity: [0, -9.81, 0] });
@@ -298,8 +292,7 @@ describe('World.updateSleep', () => {
     assertArrayClose(box.x, place, 'a body that sleeps does not move');
   });
 
-  it('should wake a body that takes an impulse',
-    { todo: 'the body never goes to sleep -- see the note above' }, () => {
+  it('should wake a body that takes an impulse', () => {
     // Arrange
     const D = dims(3);
     const world = new nd.World({ dimensions: 3, gravity: [0, -9.81, 0] });
