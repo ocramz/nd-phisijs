@@ -72,9 +72,14 @@ describe('pointVelocity', () => {
       // Act
       const u = body.pointVelocity(r, new Float64Array(D.n));
 
-      // Assert
+      // Assert -- the tolerance is relative to `|r|^2`, and `|r|^2` goes to
+      // zero for an `r` of the size 1e-160, which `anyVector` gives. The
+      // relative part is then zero, and one bit of the last place of the sum
+      // stops the test. Thus add an absolute floor. It is 1e-318, thus it
+      // hides no error that has a physical size.
       const spin = Float64Array.from(u, (v, i) => v - body.v[i]);
-      assert.ok(Math.abs(dot(spin, r)) <= 1e-9 * norm(r) ** 2 * (1 + norm(body.w)),
+      const tol = 1e-9 * norm(r) ** 2 * (1 + norm(body.w)) + Number.MIN_VALUE * 1024;
+      assert.ok(Math.abs(dot(spin, r)) <= tol,
         `the turn moves the point by ${dot(spin, r)} along the offset`);
     }));
   });

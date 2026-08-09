@@ -291,6 +291,16 @@ For 4 dimensions and more, you give the size directly:
 - `new PhysiN.HyperTorusMesh(majorRadius, minorRadius, plane, material, mass, options)`
 - `new PhysiN.HyperMesh(vertices, cells, material, mass)`
 
+Each class takes its count of dimensions from what you give it: a hyperbox
+from the length of its half extents, a half space from the length of its
+normal, and a hypertorus from `options.dimensions`. **A ball gives nothing**,
+because a ball of 3 dimensions and a ball of 5 have the same radius. Thus
+`PhysiN.HyperSphereMesh` waits, and it takes the count of the first
+`setPositionN`, or the count of the scene at `scene.add`. A ball works in a
+scene of any count of dimensions.
+
+`scene.add` throws when the count of the mesh is not the count of the scene.
+
 ### The convex mesh
 
 `PhysiN.ConvexMesh` reads the triangles of the geometry. It removes the
@@ -544,6 +554,16 @@ The integrator calls it when the defect is more than `rotorTolerance`.
 The gyroscopic term makes double rotations very frequently. Thus you cannot
 remove this step from a 4D engine.
 
+**The half turn.** The rebuild takes each axis in turn, and it turns a work
+frame with the same rotor that it puts into the product. A half turn is the
+hard condition for that method, and a body that turns passes through a half
+turn two times in each revolution. The plane of a turn near pi radians is a
+small difference of large numbers: at `pi - 1e-11` it points 1e-4 along an
+axis that is already in its place, and the turn then moves that axis by 2e-4.
+Thus the rebuild makes the plane normal to those axes again, and it takes the
+plane of the axis that comes next when the turn is exactly pi. `ND-PHYSICS.md`,
+B2, gives the three rules.
+
 ---
 
 ## 11. The library without three.js
@@ -601,7 +621,7 @@ in `new PhysiN.Scene({ params: { ... } })`.
 | `constraintDamping` | 1 | the damping ratio of a soft joint |
 | `constraintHertzRatio` | 0.25 | the largest part of the rate of a substep that the frequency may use |
 | `rotorTolerance` | 1e-9 | the limit of the rotor defect |
-| `gyroscopic` | true | set it to false to remove the gyroscopic term |
+| `gyroscopic` | true | set it to false to remove the gyroscopic term from the rotor step |
 | `gyroscopicIterations` | 1 | the iteration count of the implicit gyroscopic step |
 | `allowSleep` | true | set it to false to keep all the bodies awake |
 | `sleepLinearVelocity`, `sleepAngularVelocity`, `sleepTime` | 0.03, 0.03, 0.6 | the sleep limits |
@@ -648,13 +668,20 @@ in this repository. The full plan has this order:
 The plugin tests use a small stub in the place of three.js. Thus they operate
 in Node, with no browser. `test/worker.js` contains that stub.
 
-### Known effect
+### The angular momentum
 
-The implicit method of the gyroscopic term removes a small quantity of angular
-momentum over a long time. At `dt = 1/120` the loss is near 7%. At `dt = 1/960`
-it is near 1%. This is a property of the method, and it is not a defect in the
-algebra. Use a smaller time step, or set `gyroscopic: false` if your bodies
-have no fast free rotation.
+A body with no torque keeps its angular momentum exactly, in size and in
+direction. The state holds `L` in the world frame, and the engine builds the
+angular velocity again from `L` after each turn of the rotor. Thus the turn of
+the frame is already in the state.
+
+The implicit solve of the Euler equation writes no field of the body. It gives
+the angular velocity at the END of the step, and the engine uses that value
+for the rotor step only. A write of `L` there would count the turn of the
+frame a second time, and the momentum of a free body would turn at the rate
+`[w, L]`. Before, the engine did that: a box of `[1, 0.6, 0.3]` with
+`w = (0.2, 3, 0.1)` turned its momentum by 39 degrees in 2 seconds, at each
+step length.
 
 ---
 

@@ -347,6 +347,13 @@
   }
 
   // src/nd/algebra/rotor.js
+  /**
+   * A length below this one counts as zero. This is not a tolerance of the
+   * world, thus it is not in `defaultParams`: it says where the plane of two
+   * vectors stops to have a meaning, and it comes from the accuracy of the
+   * double and not from a choice of the user. See design rule 2.
+   */
+  var ROTOR_ZERO = 1e-12;
   /** The rotor that turns nothing. Its scalar component is 1. */
   function rotorIdentity(D, out) {
     const R = out || new Float64Array(D.r);
@@ -436,6 +443,12 @@
    * The rotor of a turn of `angle` radians in the plane of the bivector `B`.
    * It makes `B` a unit bivector first, thus the length of `B` has no effect.
    * It gives the identity when `B` is zero.
+   *
+   * `angle` is the turn of the BODY, as in `rotorFromPlane`. The exponent
+   * holds the half angle, because the sandwich product applies the rotor two
+   * times, and it holds the minus of `dR/dt = -(1/2) w R`. Thus
+   * `rotorFromBivectorAngle(D, e_i ^ e_j, angle)` and
+   * `rotorFromPlane(D, i, j, angle)` give the same rotor.
    */
   function rotorFromBivectorAngle(D, B, angle, out) {
     let mag = 0;
@@ -443,7 +456,7 @@
     mag = Math.sqrt(mag);
     if (mag < 1e-300) return rotorIdentity(D, out);
     const S = new Float64Array(D.k);
-    for (let p = 0; p < D.k; p += 1) S[p] = B[p] / mag * angle;
+    for (let p = 0; p < D.k; p += 1) S[p] = -B[p] / mag * (angle / 2);
     return rotorExp(D, S, out);
   }
   /** The scratch multivectors of each `D`, for the sandwich products. */
@@ -541,14 +554,28 @@
    * The shortest rotor that turns the unit vector `a` onto the unit vector
    * `b`. The turn stays in the plane of `a` and `b`.
    *
-   * There are three conditions:
-   *   - The two vectors are almost equal: it gives the identity.
-   *   - The two vectors are almost opposite: the plane is not defined. It
-   *     makes a vector normal to `a`, then it turns through pi radians.
-   *   - All other conditions: it builds `1 + a . b` and `b ^ a` directly, then
-   *     it divides by the length. This is the half angle form.
+   * The direct form is `1 + b a`, made a unit rotor. It is the half angle
+   * form. It is accurate while `a . b` is not near -1, and it loses ALL of
+   * its accuracy at -1, because `1 + a . b` and `b ^ a` are then two small
+   * differences of large numbers. Thus there are three conditions:
    *
-   * `rotorCorrect` uses this function to build a rotor from a matrix.
+   *   - `a . b` is 0 or more: the direct form.
+   *   - `a . b` is less than 0: two turns. `P` takes `a` to `-a` in the plane
+   *     of `a` and `b`, and the direct form takes `-a` to `b`. The dot of the
+   *     second turn is `-a . b`, thus more than 0, thus the form is accurate.
+   *     The two turns are in the same plane, thus the answer is still the
+   *     shortest turn.
+   *   - `b` is `-a`: the plane has no meaning. It makes a vector normal to
+   *     `a`, then it turns through pi radians.
+   *
+   * The last step makes the length of the rotor 1 with the true euclidean
+   * norm, and not with the divisor `sqrt(2 (1 + a . b))` of the algebra. The
+   * rotor is a scalar and ONE 2-blade, thus a euclidean length of 1 makes it
+   * an exact rotor, whatever the rounding did.
+   *
+   * `rotorCorrect` does NOT use this function. It builds its own plane,
+   * because it must also keep that plane normal to the axes that are already
+   * in their place. See the note there.
    *
    * @param {Float64Array} a a unit vector of length `n`
    * @param {Float64Array} b a unit vector of length `n`
@@ -557,25 +584,36 @@
     const n = D.n;
     let dot = 0;
     for (let i = 0; i < n; i += 1) dot += a[i] * b[i];
-    if (dot > 1 - 1e-12) return rotorIdentity(D, out);
-    if (dot < -1 + 1e-12) {
-      let best = 0;
-      for (let i = 1; i < n; i += 1) if (Math.abs(a[i]) < Math.abs(a[best])) best = i;
+    if (dot < 0) {
       const t = new Float64Array(n);
-      t[best] = 1;
-      let d2 = 0;
-      for (let i = 0; i < n; i += 1) d2 += t[i] * a[i];
-      for (let i = 0; i < n; i += 1) t[i] -= d2 * a[i];
       let ln = 0;
-      for (let i = 0; i < n; i += 1) ln += t[i] * t[i];
+      for (let i = 0; i < n; i += 1) {
+        t[i] = b[i] - dot * a[i];
+        ln += t[i] * t[i];
+      }
       ln = Math.sqrt(ln);
+      if (ln < ROTOR_ZERO) {
+        let best = 0;
+        for (let i = 1; i < n; i += 1) if (Math.abs(a[i]) < Math.abs(a[best])) best = i;
+        t.fill(0);
+        t[best] = 1;
+        let d2 = 0;
+        for (let i = 0; i < n; i += 1) d2 += t[i] * a[i];
+        for (let i = 0; i < n; i += 1) t[i] -= d2 * a[i];
+        ln = 0;
+        for (let i = 0; i < n; i += 1) ln += t[i] * t[i];
+        ln = Math.sqrt(ln);
+      }
       for (let i = 0; i < n; i += 1) t[i] /= ln;
       const B = new Float64Array(D.k);
       for (let p = 0; p < D.k; p += 1) {
         const [i, j] = D.pairs[p];
         B[p] = a[i] * t[j] - a[j] * t[i];
       }
-      return rotorFromBivectorAngle(D, B, Math.PI, out);
+      const P = rotorFromBivectorAngle(D, B, Math.PI);
+      const back = new Float64Array(n);
+      for (let i = 0; i < n; i += 1) back[i] = -a[i];
+      return rotorMul(D, rotorBetweenVectors(D, back, b), P, out);
     }
     const R = out || new Float64Array(D.r);
     R.fill(0);
@@ -584,8 +622,10 @@
       const [i, j] = D.pairs[p];
       R[D.biSlot[p]] = b[i] * a[j] - b[j] * a[i];
     }
-    const f = 1 / Math.sqrt(2 * (1 + dot));
-    for (let i = 0; i < D.r; i += 1) R[i] *= f;
+    let len = 0;
+    for (let i = 0; i < D.r; i += 1) len += R[i] * R[i];
+    len = Math.sqrt(len);
+    for (let i = 0; i < D.r; i += 1) R[i] /= len;
     return R;
   }
   /**
@@ -601,10 +641,28 @@
    *   1. Build the matrix `F` of the rotor with `rotorMatrix`.
    *   2. Make the columns of `F` orthogonal and of the length 1, with the
    *      Gram-Schmidt method. Now `F` is a true rotation matrix.
-   *   3. Build a new rotor from `F`. Take each axis in turn, and multiply the
-   *      rotors that `rotorBetweenVectors` gives.
+   *   3. Build a new rotor from `F`. Take each axis `c` in turn, and turn the
+   *      column `c` of a work frame `cur` on to the column `c` of `F`. The
+   *      plane holds `p`, the column of `cur`, and `q`, the part of the column
+   *      of `F` that is normal to `p`. The angle is `atan2(|q|, p . tgt)`.
+   *      Multiply the rotors, and turn `cur` with the SAME rotor, thus `cur`
+   *      is always the matrix of the product.
    *   4. Give the new rotor the same sign as the old one. `R` and `-R` are the
    *      same rotation, and a change of the sign would make the body jump.
+   *
+   * A HALF TURN IS THE HARD CONDITION. A turn must not move an axis that is
+   * already in its place. `q` is a small difference of large numbers when the
+   * angle comes near pi: at an angle of `pi - 1e-11` the part of `q` along a
+   * placed column can grow to 1e-4, and a turn of almost pi radians then moves
+   * that column by two times as much. Thus step 3 makes `q` normal to the
+   * columns `0` to `c - 1` of `F` again, before it makes the length of `q` 1.
+   *
+   * When `q` is zero, the column of `F` is the column of `cur`, or its
+   * opposite. The plane then has no meaning. If the two agree, there is
+   * nothing to do. If they are opposite, take the plane of `p` and the column
+   * `c + 1` of `cur`: that column is normal to `p` and to every placed column,
+   * by construction. The column `c + 1` is always there, because the loop
+   * stops at `n - 2`.
    *
    * It gives the identity when the matrix is degenerate.
    *
@@ -623,7 +681,7 @@
       let ln = 0;
       for (let i = 0; i < n; i += 1) ln += F[i * n + c] * F[i * n + c];
       ln = Math.sqrt(ln);
-      if (ln < 1e-12) {
+      if (ln < ROTOR_ZERO) {
         return rotorIdentity(D, out);
       }
       for (let i = 0; i < n; i += 1) F[i * n + c] /= ln;
@@ -634,6 +692,8 @@
     const p = new Float64Array(n);
     const q = new Float64Array(n);
     const tgt = new Float64Array(n);
+    const col = new Float64Array(n);
+    const turned = new Float64Array(n);
     for (let c = 0; c < n - 1; c += 1) {
       for (let i = 0; i < n; i += 1) {
         p[i] = cur[i * n + c];
@@ -641,31 +701,35 @@
       }
       let dot2 = 0;
       for (let i = 0; i < n; i += 1) dot2 += p[i] * tgt[i];
-      if (dot2 > 1 - 1e-15) continue;
-      const S = rotorBetweenVectors(D, p, tgt);
-      acc = rotorMul(D, S, acc);
-      let ln = 0;
-      for (let i = 0; i < n; i += 1) {
-        q[i] = tgt[i] - dot2 * p[i];
-        ln += q[i] * q[i];
+      for (let i = 0; i < n; i += 1) q[i] = tgt[i] - dot2 * p[i];
+      for (let e = 0; e < c; e += 1) {
+        let d = 0;
+        for (let i = 0; i < n; i += 1) d += q[i] * F[i * n + e];
+        for (let i = 0; i < n; i += 1) q[i] -= d * F[i * n + e];
       }
+      let ln = 0;
+      for (let i = 0; i < n; i += 1) ln += q[i] * q[i];
       ln = Math.sqrt(ln);
-      if (ln < 1e-15) continue;
-      for (let i = 0; i < n; i += 1) q[i] /= ln;
-      const cs = dot2;
-      const sn = ln;
-      for (let col = c; col < n; col += 1) {
-        let a = 0;
-        let b = 0;
-        for (let i = 0; i < n; i += 1) {
-          a += cur[i * n + col] * p[i];
-          b += cur[i * n + col] * q[i];
-        }
-        const na = a * cs - b * sn;
-        const nb = a * sn + b * cs;
-        for (let i = 0; i < n; i += 1) {
-          cur[i * n + col] += (na - a) * p[i] + (nb - b) * q[i];
-        }
+      let angle;
+      if (ln < ROTOR_ZERO) {
+        if (dot2 > 0) continue;
+        for (let i = 0; i < n; i += 1) q[i] = cur[i * n + c + 1];
+        angle = Math.PI;
+      } else {
+        for (let i = 0; i < n; i += 1) q[i] /= ln;
+        angle = Math.atan2(ln, dot2);
+      }
+      const B = new Float64Array(D.k);
+      for (let t = 0; t < D.k; t += 1) {
+        const [i, j] = D.pairs[t];
+        B[t] = p[i] * q[j] - p[j] * q[i];
+      }
+      const S = rotorFromBivectorAngle(D, B, angle);
+      acc = rotorMul(D, S, acc);
+      for (let cc = 0; cc < n; cc += 1) {
+        for (let i = 0; i < n; i += 1) col[i] = cur[i * n + cc];
+        rotorApplyVector(D, S, col, turned);
+        for (let i = 0; i < n; i += 1) cur[i * n + cc] = turned[i];
       }
     }
     let dot = 0;
@@ -2504,8 +2568,9 @@
    * `linearFactor` and `angularFactor` multiply the change, thus you can hold
    * a body on one axis or in one plane.
    *
-   * At the end it applies the gyroscopic term, if `opts.gyroscopic` is not
-   * false. A static body or a sleeping body does not change.
+   * The gyroscopic term is NOT here. It is in `integratePositions`, because
+   * the state holds `L` and not `w`. See `gyroscopicSpin`.
+   * A static body or a sleeping body does not change.
    *
    * @param {number} dt the length of the step in seconds
    * @param {Float64Array} gravity the acceleration of gravity, of length `n`
@@ -2527,12 +2592,19 @@
       for (let p = 0; p < k; p += 1) body.L[p] *= f;
     }
     matVec(body.invInertiaWorld, body.L, k, k, body.w);
-    if (opts.gyroscopic !== false) applyGyroscopic(D, body, dt, opts);
   }
   /**
-   * The gyroscopic term of the Euler equation. It makes a body that spins
-   * about an axis that is not a principal axis move as it must. Without it a
-   * body would not tumble.
+   * The gyroscopic term of the Euler equation. It gives the angular velocity
+   * at the END of the step, in the world frame. It changes NO field of the
+   * body: the caller uses the answer for the rotor step only.
+   *
+   * WHY IT CHANGES NOTHING. The state holds `L` in the world frame, and
+   * `updateDerived` builds `w` again from `L` with the new rotor. Thus the
+   * turn of the frame is already in the state, and a free body keeps its
+   * momentum exactly. A write of `L` here would count that turn a second
+   * time, and the momentum would turn at the rate `[w, L]`. What is left for
+   * this function is the accuracy of the rotor step: `w` at the end of the
+   * step, and not at the start.
    *
    * The Euler equation in the body frame is `I dw/dt - w x I w = tau`. Here
    * `x` is the commutator of two bivectors, and not a cross product. The
@@ -2550,9 +2622,12 @@
    * The work is in the body frame, where the inertia tensor is constant. The
    * function changes the frame with `R2` at the start and at the end.
    *
-   * See ND-PHYSICS.md, A7 and C5.
+   * See ND-PHYSICS.md, A7, B1 and C5.
+   *
+   * @returns {Float64Array} the angular velocity in the world frame, of
+   *   length `k`
    */
-  function applyGyroscopic(D, body, dt, opts) {
+  function gyroscopicSpin(D, body, dt, opts, out) {
     const { k } = D;
     const iters = opts.gyroscopicIterations || 1;
     const w1 = matTVec(body.R2, body.w, k, k);
@@ -2586,9 +2661,7 @@
       }
       if (change < 1e-24) break;
     }
-    matVec(body.R2, w2, k, k, body.w);
-    const Ib = matVec(I, w2, k, k);
-    matVec(body.R2, Ib, k, k, body.L);
+    return matVec(body.R2, w2, k, k, out || new Float64Array(k));
   }
   /**
    * The second half of the step: the velocities change the position and the
@@ -2599,6 +2672,14 @@
    *
    * The rotor equation has the same form as the quaternion equation of a 3D
    * engine. See ND-PHYSICS.md, A5.
+   *
+   * The `w` of the rotor step comes from `gyroscopicSpin`, if
+   * `opts.gyroscopic` is not false. That is the angular velocity at the END
+   * of the step. The function runs here, and not in `integrateVelocities`,
+   * for two reasons: each impulse builds `body.w` again from `body.L`, thus a
+   * value that the first half wrote would go away as soon as the solver
+   * touches the body; and the answer must not go into `body.L`. See
+   * `gyroscopicSpin`.
    *
    * That step takes the rotor a little away from a true rotation. The
    * function measures the error with `rotorDefect`, and it calls
@@ -2612,8 +2693,9 @@
     if (body.isStatic || body.sleeping) return;
     const { n, r } = D;
     for (let i = 0; i < n; i += 1) body.x[i] += dt * body.v[i];
+    const w = opts.gyroscopic !== false ? gyroscopicSpin(D, body, dt, opts) : body.w;
     const W = new Float64Array(r);
-    for (let p = 0; p < D.k; p += 1) W[D.biSlot[p]] = body.w[p];
+    for (let p = 0; p < D.k; p += 1) W[D.biSlot[p]] = w[p];
     const dR = rotorMul(D, W, body.R);
     for (let i = 0; i < r; i += 1) body.R[i] += -0.5 * dt * dR[i];
     const tol = opts.rotorTolerance !== void 0 ? opts.rotorTolerance : 1e-9;
@@ -3611,8 +3693,13 @@
   /**
    * Adds the violated angular speed of each row to the drift of that row. Call
    * this one time in each substep, AFTER the solver and BEFORE
-   * `integratePositions`, thus `w` and `axis` are the values that the
-   * integrator will use.
+   * `integratePositions`, thus `w` and `axis` are the values that the solver
+   * made.
+   *
+   * The rotor step of `integratePositions` uses the gyroscopic value of `w`,
+   * which is not exactly this one. The difference is of the order of `dt`
+   * times the commutator. The drift stays on `body.w`, because that is the
+   * value that agrees with the momentum `body.L`.
    *
    * WHY A DRIFT AND NOT A GEOMETRIC ERROR. A lock that leaves two or more
    * planes free has no geometric error that means anything. `SO(n)` is not

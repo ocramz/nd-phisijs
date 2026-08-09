@@ -116,28 +116,20 @@ describe('the two bundles', () => {
 });
 
 /**
- * A KNOWN DEFECT, that this test found.
- *
- * README section 8 gives `PhysiN.HyperSphereMesh` under the head "For 4
- * dimensions and more". The class holds `n: 4` in its shape, and it takes no
- * count of dimensions:
- *
- *     { type: "sphere", n: 4, radius }
- *
- * Thus the plugin builds the state of the body with 4 dimensions, whatever
- * the scene has. At 2, 3 and 5 dimensions the first `setPositionN` or
- * `scene.add` stops with `RangeError: offset is out of bounds`, from inside
- * `Body` or `setPositionN`. The message does not name the true cause.
+ * THE COUNT OF DIMENSIONS OF A MESH.
  *
  * `HyperBoxMesh` takes the count from the length of its half extents, and
- * `HyperPlaneMesh` from the length of its normal. `HyperTorusMesh` takes
- * `options.dimensions`. Only the ball has no way.
+ * `HyperPlaneMesh` from the length of its normal. A ball gives nothing: a
+ * ball of 3 dimensions and a ball of 5 have the same radius. The class held
+ * `n: 4` for that reason, thus a ball in a scene of 2, 3 or 5 dimensions
+ * stopped with `RangeError: offset is out of bounds`, and the message did not
+ * name the true cause.
  *
- * Take the `todo` mark away when the defect is repaired.
+ * The shape of a ball now holds no `n`. The state waits, and the count comes
+ * from the first `setPositionN` or from `scene.add`.
  */
 describe('PhysiN.HyperSphereMesh', () => {
-  it('should work in each count of dimensions',
-    { todo: 'the class holds n = 4 -- see the note above' }, () => {
+  it('should work in each count of dimensions', () => {
     fc.assert(fc.property(anyN(2, 5), (n) => {
       // Arrange
       const PhysiN = loadPhysiNFor(false);
@@ -153,6 +145,56 @@ describe('PhysiN.HyperSphereMesh', () => {
       assertArrayClose(ball.getPositionN(), new Array(n).fill(1),
         `the place of a ball of ${n} dimensions`, 1e-6);
     }));
+  });
+
+  it('should take the count of the scene when nothing else gives it', () => {
+    // No `setPositionN` before `scene.add`. The scene is the only source.
+    fc.assert(fc.property(anyN(2, 5), (n) => {
+      // Arrange
+      const PhysiN = loadPhysiNFor(false);
+      const scene = new PhysiN.Scene({ dimensions: n, gravity: new Array(n).fill(0) });
+
+      // Act
+      const ball = new PhysiN.HyperSphereMesh(0.5, {}, 1);
+      scene.add(ball);
+
+      // Assert
+      assert.equal(ball.getPositionN().length, n, `the position holds ${n} numbers`);
+      assert.equal(ball.getRotor().length, 1 << (n - 1), 'the rotor holds 2^(n-1) numbers');
+    }));
+  });
+
+  it('should give the same rotor for a turn before and after the count', () => {
+    // `rotateInPlane` can come before `setPositionN`, thus the state holds the
+    // turn and plays it back when the count arrives.
+    fc.assert(fc.property(anyN(3, 5), (n) => {
+      // Arrange
+      const PhysiN = loadPhysiNFor(false);
+      const before = new PhysiN.HyperSphereMesh(0.5, {}, 1);
+      const after = new PhysiN.HyperSphereMesh(0.5, {}, 1);
+
+      // Act
+      before.rotateInPlane(0, 1, 0.4);
+      before.rotateInPlane(1, 2, -0.7);
+      before.setPositionN(new Array(n).fill(0));
+      after.setPositionN(new Array(n).fill(0));
+      after.rotateInPlane(0, 1, 0.4);
+      after.rotateInPlane(1, 2, -0.7);
+
+      // Assert
+      assertArrayClose(before.getRotor(), after.getRotor(),
+        'the turn that waited gives the same rotor', 1e-12);
+    }));
+  });
+
+  it('should say the true cause when the counts do not agree', () => {
+    // Arrange -- a box gives its own count, and it does not wait.
+    const PhysiN = loadPhysiNFor(false);
+    const scene = new PhysiN.Scene({ dimensions: 4, gravity: [0, 0, 0, 0] });
+    const box = new PhysiN.HyperBoxMesh([1, 1, 1], {}, 1);
+
+    // Act, Assert
+    assert.throws(() => scene.add(box), /3 dimensions and the scene has 4/);
   });
 });
 

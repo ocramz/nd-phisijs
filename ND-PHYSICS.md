@@ -464,8 +464,27 @@ Integrate the gyroscopic term of the Euler equation separately, with an
 implicit Euler method (Catto, 2015). The gyroscopic term is the commutator
 term `w × I' w`. It is stiff. An explicit method makes it unstable.
 
-**Note:** the implicit method removes a small quantity of angular momentum over
-long times. This is a known effect. Do not read it as a bug in the algebra.
+**Where the gyroscopic term belongs.** A5 holds `L` in the WORLD frame, and
+`w` comes from `L` with `w = [R]2 I^-1 [R]2^T L` after each turn of the rotor.
+Thus the turn of the frame is already in the state, and `dL/dt = tau` gives a
+free body a momentum that does not change. The implicit solve must therefore
+write NO field of the body. Its answer is `w` at the end of the step, and the
+rotor step uses it:
+
+```
+integrateVelocities   v, L, w = I'^-1 L        (no gyroscopic term)
+solver                impulses -> L, w
+integratePositions    w2 = implicit Euler(w, dt)
+                      R += -(1/2) dt w2 R
+                      w = I'^-1 L              (updateDerived)
+```
+
+A write of `L` at the end of the solve counts the turn of the frame two times.
+The momentum of a free body then turns at the rate `[w, L]`, and the error of
+one step is of the order of `dt`, thus a smaller step does not remove it. The
+size of `L` and the energy stay correct, because a commutator with `L` is
+normal to `L`. Only the direction is wrong. An engine that holds `w` in the
+body frame in the place of `L` does not have this condition.
 
 ## B2. Rotor error correction — critical
 
@@ -488,6 +507,40 @@ The result is always a correct rotation.
 **Caution:** the gyroscopic term makes double rotations very frequently. Thus
 you cannot skip this step in a 4D engine. Put this correction in the numerics
 module, and not in the algebra module.
+
+**The half turn is the hard condition.** The rebuild aligns one axis at a
+time: it turns the column `c` of a work frame on to the column `c` of the
+orthonormal matrix. Three rules hold that method together, and a half turn
+breaks each one of them:
+
+1. **Turn the work frame with the same rotor that goes into the product.** A
+   frame that does not follow gives the turn to the axis that comes next a
+   second time.
+2. **Make the plane normal to the axes that are done.** The plane holds `p`,
+   the column of the work frame, and `q`, the part of the target column that
+   is normal to `p`. `q` is a small difference of large numbers when the angle
+   comes near pi. At an angle of `pi - 1e-11` its part along an axis that is
+   already in its place grows to 1e-4, and a turn of almost pi radians moves
+   that axis by two times as much. Make `q` normal to those columns again
+   before you make its length 1.
+3. **Give the half turn a plane.** When `q` is zero, the target column is `p`
+   or `-p`, and the plane has no meaning. If the two agree there is nothing to
+   do. If they are opposite, take the plane of `p` and the column that comes
+   next in the work frame: that column is normal to `p` and to every axis that
+   is done, by construction.
+
+The shortest rotor between two unit vectors,
+`(1 + b a) / sqrt(2 (1 + a . b))`, has the same limit. It loses all of its
+accuracy as `a . b` comes near -1, because the divisor and the wedge are then
+two small differences of large numbers, and the answer can stop being a unit
+rotor. Build such a turn as two turns, `a` to `-a` and then `-a` to `b`: the
+second has a dot of more than 0. And make the length 1 with the euclidean
+norm, and not with the divisor: a scalar and ONE 2-blade of the length 1 is
+always an exact rotor.
+
+A body that turns passes through a half turn two times in each revolution.
+Thus a test with a uniform angle does not find these conditions. Test with
+angles that come to pi on a ladder, down to the accuracy of the double.
 
 ## B3. Matrix work per step
 
