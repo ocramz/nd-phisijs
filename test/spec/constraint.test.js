@@ -511,6 +511,55 @@ describe('the subspace lock', () => {
       assert.ok(Math.abs(b.x[i]) < 1e-2, `the axis ${i} must be held, and it is ${b.x[i]}`);
     }
   });
+
+  it('should pin a 3D model to a hyperplane and leave the 3D rotation free', () => {
+    // The position on `w`, and the three planes that hold `w`. The body then
+    // keeps a full 3D rotation, and it never turns out of the slice.
+    const D = dims(4);
+    const world = quietWorld(4);
+    const b = world.addBody(new Body(D, {
+      shape: HyperBox(D, [0.5, 0.7, 0.3, 0.6]), mass: 1, position: [0, 0, 0, 1],
+    }));
+    b.setLinearVelocity([0, 0, 0, 2]);
+    b.setAngularVelocity([0.8, 0, 0, 0, 0, 0.6]);
+    world.createConstraint({
+      type: 'subspace', lockAxes: [3], lockPlanes: [2, 4, 5], worldFrame: true,
+    }, b, null);
+
+    for (let s = 0; s < 300; s += 1) world.step(1 / 120);
+
+    assertClose(b.x[3], 1, 'the body must stay on the hyperplane', 1e-2);
+    // Three free planes of six means that `na < k - 1`, thus the rows hold the
+    // velocity and the drift. See `accumulateDrift` and ND-PHYSICS.md, B8.
+    for (const p of [2, 4, 5]) {
+      assert.ok(Math.abs(b.w[p]) < 1e-3, `the plane ${p} must not turn, and it is ${b.w[p]}`);
+    }
+    assert.ok(Math.abs(b.w[0]) > 0.1, 'the rotation of the 3D model must stay free');
+  });
+
+  it('should follow the anchor that moves, and keep the same rows', () => {
+    const D = dims(4);
+    const world = quietWorld(4);
+    const b = world.addBody(new Body(D, {
+      shape: HyperBox(D, [0.5, 0.5, 0.5, 0.5]), mass: 1, position: [0, 0, 0, 1],
+    }));
+    const joint = world.createConstraint({
+      type: 'subspace', lockAxes: [3], worldFrame: true,
+    }, b, null);
+
+    for (let s = 0; s < 100; s += 1) world.step(1 / 120);
+    const rows = joint.rows;
+    const row0 = joint.rows[0];
+
+    joint.localB[3] = -2;
+    b.wake();
+    for (let s = 0; s < 400; s += 1) world.step(1 / 120);
+
+    assertClose(b.x[3], -2, 'the body must go to the new hyperplane', 1e-2);
+    assert.equal(joint.rows, rows, 'the array of the rows must be the same object');
+    assert.equal(joint.rows[0], row0, 'the row must be the same object');
+    assert.equal(joint.rows.length, 1, 'the count of the rows must not change');
+  });
 });
 
 describe('the joints and the world', () => {

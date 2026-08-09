@@ -439,6 +439,32 @@ scene.addConstraint(new PhysiN.SubspaceJoint(body, null, { lockAxes: [3], worldF
 Use a subspace joint in the place of `linearFactor` and `angularFactor`. Those
 two masks work on the velocity alone, and they do not correct a drift.
 
+**To pin a 3D model in a 4D world**, hold the position on `w` and the three
+planes that hold `w`. The model then keeps a full 3D rotation, and it never
+turns out of the slice that the viewer shows.
+
+```js
+const pin = scene.addConstraint(new PhysiN.SubspaceJoint(model, null, {
+  lockAxes: [3],          // the position on w
+  lockPlanes: [2, 4, 5],  // the planes (x w), (y w) and (z w)
+  worldFrame: true
+}));
+```
+
+**The anchors move at run time.** `setAnchors(localA, localB)` writes a new
+anchor, and null leaves an anchor as it is. The anchors are always in the local
+frame of their body; with a null second body the frame is the world itself,
+thus `localB` is a point of the world. For the pin above only `localB[3]` has
+an effect, thus the method moves the hyperplane:
+
+```js
+pin.setAnchors(null, [0, 0, 0, 1.5]);   // the pin goes to w = 1.5
+```
+
+The joint keeps its impulses, thus the body slides to the new place and it does
+not jump. `constraintMaxBias` limits the speed of the slide. Give the joint a
+softness for a spring in the place of a rigid pull.
+
 **A joint is soft under a load.** The error of a joint grows with the length of
 a chain and with the ratio of the masses. `iterations` and `subSteps` do
 different work, and which one helps depends on the scene:

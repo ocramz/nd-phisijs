@@ -6,7 +6,7 @@ comments, to the documents and to the messages of the commits.
 # Commands
 
 ```
-npm test                  # node test/worker.js (20 tests), then the specs.
+npm test                  # node test/worker.js (21 tests), then the specs.
 node --check physin.js    # the syntax only
 node tools/sync-bundles.mjs         # copies the engine into physin_worker.js
 node tools/sync-bundles.mjs --check # says what differs, and changes nothing

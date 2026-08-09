@@ -5945,13 +5945,30 @@
           constraints.delete(params.id);
         }
       },
-      /** Changes `enabled`, `collideConnected`, `rest` or `mode` of a joint. */
+      /**
+       * Changes `enabled`, `collideConnected`, the anchors, the rest length,
+       * the limits, the motor, the softness or the break load of a joint.
+       *
+       * THE ANCHORS DO NOT RESET THE JOINT. The impulses of the rows stay
+       * correct when an anchor moves, and they give the warm start that makes
+       * the move smooth. `updateTransform` resets the joints because it
+       * teleports a body, which is a different thing.
+       */
       setConstraintParams(params) {
         const j = constraints.get(params.id);
         if (!j) return;
         if (params.enabled !== void 0) {
           if (params.enabled && !j.enabled) resetConstraint(j);
           j.enabled = params.enabled;
+        }
+        // A loop, and not `Float64Array.set`: `set` throws when the message
+        // holds too many components, and a throw in the worker gives no
+        // message back.
+        if (params.localA) {
+          for (let i = 0; i < D.n && i < params.localA.length; i += 1) j.localA[i] = params.localA[i];
+        }
+        if (params.localB) {
+          for (let i = 0; i < D.n && i < params.localB.length; i += 1) j.localB[i] = params.localB[i];
         }
         if (params.rest !== void 0) j.rest = params.rest;
         if (params.mode !== void 0) j.mode = params.mode;
@@ -7108,6 +7125,32 @@
         if (this.scene) this.scene.execute("setConstraintParams", { id: this.id, rest: value });
       }
       /**
+       * Moves the anchors of the joint. Give null for an anchor that does not
+       * change. THE ANCHORS ARE ALWAYS IN THE LOCAL FRAME OF THEIR OBJECT.
+       *
+       * With a null second object the frame is the world itself, thus `localB`
+       * is a point of the world. A subspace joint that holds the axis `w` then
+       * reads `localB[3]` only, and this method moves the hyperplane:
+       *
+       *   joint.setAnchors(null, [0, 0, 0, w]);
+       *
+       * The joint keeps its impulses, thus the body slides to the new place
+       * and it does not jump. `constraintMaxBias` limits the speed of the
+       * slide. Use `setSoftness` for a spring in the place of a rigid pull.
+       */
+      setAnchors(localA, localB) {
+        const m = { id: this.id };
+        if (localA) {
+          this.opts.localA = Array.from(localA);
+          m.localA = this.opts.localA;
+        }
+        if (localB) {
+          this.opts.localB = Array.from(localB);
+          m.localB = this.opts.localB;
+        }
+        if (this.scene) this.scene.execute("setConstraintParams", m);
+      }
+      /**
        * The two angles of a hinge, in radians. The angle wraps at pi, thus a
        * limit outside `(-pi, pi)` has no meaning. Give `-Infinity` and
        * `Infinity` to take the limits away.
@@ -7226,6 +7269,17 @@
      *
      *   // hold a 4D body on the hyperplane w = 0, and leave x, y and z free
      *   scene.addConstraint(new PhysiN.SubspaceJoint(body, null, { lockAxes: [3] }));
+     *
+     * To pin a 3D model in a 4D world, hold the position on `w` AND the three
+     * planes that hold `w`. The model then keeps a full 3D rotation, and it
+     * never turns out of the slice:
+     *
+     *   const pin = scene.addConstraint(new PhysiN.SubspaceJoint(model, null, {
+     *     lockAxes: [3],          // the position on w
+     *     lockPlanes: [2, 4, 5],  // the planes (x w), (y w) and (z w)
+     *     worldFrame: true
+     *   }));
+     *   pin.setAnchors(null, [0, 0, 0, 1.5]);  // move the hyperplane to w = 1.5
      *
      * `opts.worldFrame` at true holds the directions in the world frame. The
      * default turns them with `a`.

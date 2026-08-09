@@ -5347,13 +5347,30 @@
           constraints.delete(params.id);
         }
       },
-      /** Changes `enabled`, `collideConnected`, `rest` or `mode` of a joint. */
+      /**
+       * Changes `enabled`, `collideConnected`, the anchors, the rest length,
+       * the limits, the motor, the softness or the break load of a joint.
+       *
+       * THE ANCHORS DO NOT RESET THE JOINT. The impulses of the rows stay
+       * correct when an anchor moves, and they give the warm start that makes
+       * the move smooth. `updateTransform` resets the joints because it
+       * teleports a body, which is a different thing.
+       */
       setConstraintParams(params) {
         const j = constraints.get(params.id);
         if (!j) return;
         if (params.enabled !== void 0) {
           if (params.enabled && !j.enabled) resetConstraint(j);
           j.enabled = params.enabled;
+        }
+        // A loop, and not `Float64Array.set`: `set` throws when the message
+        // holds too many components, and a throw in the worker gives no
+        // message back.
+        if (params.localA) {
+          for (let i = 0; i < D.n && i < params.localA.length; i += 1) j.localA[i] = params.localA[i];
+        }
+        if (params.localB) {
+          for (let i = 0; i < D.n && i < params.localB.length; i += 1) j.localB[i] = params.localB[i];
         }
         if (params.rest !== void 0) j.rest = params.rest;
         if (params.mode !== void 0) j.mode = params.mode;
