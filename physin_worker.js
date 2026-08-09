@@ -5347,6 +5347,83 @@
           constraints.delete(params.id);
         }
       },
+      /**
+       * Changes `enabled`, `collideConnected`, the anchors, the rest length,
+       * the limits, the motor, the softness or the break load of a joint.
+       *
+       * THE ANCHORS DO NOT RESET THE JOINT. The impulses of the rows stay
+       * correct when an anchor moves, and they give the warm start that makes
+       * the move smooth. `updateTransform` resets the joints because it
+       * teleports a body, which is a different thing.
+       */
+      setConstraintParams(params) {
+        const j = constraints.get(params.id);
+        if (!j) return;
+        if (params.enabled !== void 0) {
+          if (params.enabled && !j.enabled) resetConstraint(j);
+          j.enabled = params.enabled;
+        }
+        // A loop, and not `Float64Array.set`: `set` throws when the message
+        // holds too many components, and a throw in the worker gives no
+        // message back.
+        if (params.localA) {
+          for (let i = 0; i < D.n && i < params.localA.length; i += 1) j.localA[i] = params.localA[i];
+        }
+        if (params.localB) {
+          for (let i = 0; i < D.n && i < params.localB.length; i += 1) j.localB[i] = params.localB[i];
+        }
+        if (params.rest !== void 0) j.rest = params.rest;
+        if (params.mode !== void 0) j.mode = params.mode;
+        if (params.lowerAngle !== void 0) j.lowerAngle = params.lowerAngle;
+        if (params.upperAngle !== void 0) j.upperAngle = params.upperAngle;
+        if (params.lowerAngle !== void 0 || params.upperAngle !== void 0) {
+          j.hasLimit = j.lowerAngle > -Infinity || j.upperAngle < Infinity;
+        }
+        if (params.motorSpeed !== void 0) j.motorSpeed = params.motorSpeed;
+        if (params.maxMotorTorque !== void 0) j.maxMotorTorque = params.maxMotorTorque;
+        if (params.hertz !== void 0) j.hertz = params.hertz;
+        if (params.damping !== void 0) j.damping = params.damping;
+        if (params.breakForce !== void 0) j.breakForce = params.breakForce;
+        if (params.breakTorque !== void 0) j.breakTorque = params.breakTorque;
+        if (params.collideConnected !== void 0) {
+          j.collideConnected = params.collideConnected;
+          world._rebuildNoCollide();
+        }
+        j.a.wake();
+        j.b.wake();
+      },
+      /**
+       * Adds a joint. `def.a` and `def.b` are the ids of the bodies, and a `b`
+       * that is null makes a joint to the world. See `createConstraint` for the
+       * other fields of `def`.
+       *
+       * The command sends `constraintFailed` when a body is not in the world.
+       * A joint that goes before the body would be lost with no message.
+       */
+      addConstraint(def) {
+        const a = bodies.get(def.a);
+        const b = def.b === void 0 || def.b === null ? null : bodies.get(def.b);
+        if (!a || def.b !== void 0 && def.b !== null && !b) {
+          post({ cmd: "constraintFailed", params: { id: def.id, reason: "the body is not in the world" } });
+          return;
+        }
+        let joint;
+        try {
+          joint = createConstraint(D, def, a, b, world.params);
+        } catch (e) {
+          post({ cmd: "constraintFailed", params: { id: def.id, reason: e.message } });
+          return;
+        }
+        constraints.set(def.id, joint);
+        world.addConstraint(joint);
+      },
+      removeConstraint(params) {
+        const j = constraints.get(params.id);
+        if (j) {
+          world.removeConstraint(j);
+          constraints.delete(params.id);
+        }
+      },
       /** Changes `enabled`, `collideConnected`, `rest` or `mode` of a joint. */
       setConstraintParams(params) {
         const j = constraints.get(params.id);

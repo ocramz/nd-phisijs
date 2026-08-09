@@ -235,7 +235,7 @@ section('a subspace lock in four dimensions', () => {
   const cube = new PhysiN.HyperBoxMesh([0.5, 0.5, 0.5, 0.5], {}, 1);
   cube.setPositionN([0, 2, 0, 0]);
   scene.add(cube);
-  scene.addConstraint(new PhysiN.SubspaceJoint(cube, null, {
+  const lock = scene.addConstraint(new PhysiN.SubspaceJoint(cube, null, {
     lockAxes: [1],
     worldFrame: true,
   }));
@@ -247,6 +247,12 @@ section('a subspace lock in four dimensions', () => {
   for (let s = 0; s < 120; s += 1) scene.simulate(1 / 120, 1);
   check('the axes that the lock leaves free still move',
     cube.getPositionN()[0] > 0.9, `x = ${cube.getPositionN()[0].toFixed(4)}`);
+  // The anchor goes through the message protocol, thus the worker gets it.
+  lock.setAnchors(null, [0, 3, 0, 0]);
+  for (let s = 0; s < 240; s += 1) scene.simulate(1 / 120, 1);
+  check('the lock follows the anchor that moved',
+    Math.abs(cube.getPositionN()[1] - 3) < 0.02,
+    `y = ${cube.getPositionN()[1].toFixed(4)}`);
 });
 
 console.log(`\n${pass} tests pass, ${fail} tests fail`);
