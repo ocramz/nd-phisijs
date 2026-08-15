@@ -24,8 +24,8 @@ There is no build, and there are no dependencies.
 `test/worker.js` is one file, and it has no filter for one test. It has three
 blocks that the function `section()` starts. 
 
-The example pages need no server. Open `sandbox.html`, `donuts.html` or
-`plugin.html` in a browser, directly from the disk.
+The example pages need no server. Open `sandbox.html`, `donuts.html`,
+`plugin.html` or `drop4d.html` in a browser, directly from the disk.
 
 # Skills
 

@@ -21,6 +21,7 @@ ACM Transactions on Graphics 39(4), 2020.
 | `sandbox.html` | a page of bodies that fall, in 3 and in 4 dimensions. |
 | `donuts.html` | a page of two donuts that make a chain link. |
 | `plugin.html` | the five steps, on a page that loads the two files above. |
+| `drop4d.html` | a page where you drop 4D solids, and you move the cut with two keys. |
 | `test/worker.js` | the test of the two files and of the message protocol. |
 | `ND-PHYSICS.md` | the mathematics, in full. |
 
@@ -43,7 +44,7 @@ ACM Transactions on Graphics 39(4), 2020.
 
 ## 2. Look at it first
 
-Three pages need no build, and no server. Each page gets three.js from a CDN.
+Four pages need no build, and no server. Each page gets three.js from a CDN.
 Open a page in a browser, directly from the disk.
 
 - `sandbox.html` — bodies that fall, in 3 and in 4 dimensions. A ruler at the
@@ -53,6 +54,10 @@ Open a page in a browser, directly from the disk.
   possible.
 - `plugin.html` — a stack of boxes, a ball that hits the stack, and an
   octahedron. This page is the five steps of section 3, and it is short.
+- `drop4d.html` — click to drop a solid of four dimensions into a pen. Each
+  solid falls at a different `w`, and a joint holds it there. The keys `w` and
+  `s` move the 3D cut along the fourth axis, thus you see a different part of
+  the pile. Drag to turn the camera around the pile.
 
 `sandbox.html` and `donuts.html` each contain the engine, and each one sets
 `PhysiN.scripts.worker = null`. Thus they do the physics in the main thread.
@@ -122,8 +127,8 @@ build.
 npm test          # 20 tests of the two files and the worker protocol, then the specs
 ```
 
-The example pages need no server. Open `sandbox.html`, `donuts.html` or
-`plugin.html` directly from the disk.
+The example pages need no server. Open `sandbox.html`, `donuts.html`,
+`plugin.html` or `drop4d.html` directly from the disk.
 
 ### The files
 
@@ -133,6 +138,7 @@ physin_worker.js   the same engine, for a web worker
 sandbox.html       bodies that fall, in 3 and in 4 dimensions
 donuts.html        two donuts that make a chain link
 plugin.html        the five steps, on a page that loads the two files
+drop4d.html        drop 4D solids, and move the cut with the keys w and s
 test/worker.js     the test of the two files and the worker protocol
 ND-PHYSICS.md      the mathematics, in full
 package.json       the test command

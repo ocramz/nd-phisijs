@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PhysiN — a pile of solids in four dimensions</title>
+<style>
+  :root{
+    --paper:#EDEFEA; --ink:#14201C; --rule:#C6CDC5; --dim:#6B7A73;
+    --signal:#7A1F3D;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--paper);color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased}
+  #stage{position:absolute;inset:0}
+  #stage canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+  #stage canvas:active{cursor:grabbing}
+
+  #hud{position:absolute;top:0;left:0;padding:16px 18px;pointer-events:none;max-width:36ch}
+  h1{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.24em;
+     text-transform:uppercase;margin:0 0 6px}
+  h1 em{font-style:normal;color:var(--signal)}
+  .note{font-family:var(--mono);font-size:10.5px;line-height:1.65;letter-spacing:.03em;
+     margin:0 0 8px;color:var(--dim)}
+  .keys{font-family:var(--mono);font-size:10.5px;line-height:1.8;letter-spacing:.03em;
+     margin:0;color:var(--dim);white-space:pre}
+  .keys b{color:var(--ink);font-weight:600}
+
+  #panel{position:absolute;right:16px;top:16px;width:206px}
+  button{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;
+    background:rgba(237,239,234,.72);color:var(--ink);border:1px solid var(--rule);
+    padding:9px 11px;cursor:pointer;text-align:left;border-radius:0;width:100%}
+  button:hover{border-color:var(--signal);color:var(--signal)}
+  button:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+
+  #stat{position:absolute;right:16px;bottom:16px;font-family:var(--mono);font-size:10.5px;
+    color:var(--dim);letter-spacing:.04em;text-align:right;white-space:pre;line-height:1.6}
+  #stat b{color:var(--signal);font-weight:600}
+
+  #fallback{position:absolute;inset:0;display:none;place-items:center;padding:32px;
+    font-family:var(--mono);font-size:12px;color:var(--dim);text-align:center}
+  @media (max-width:640px){
+    #panel{width:150px}
+    #hud{max-width:26ch}
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="hud">
+  <h1>PhysiN <em>&middot;</em> a pile in four dimensions</h1>
+  <p class="note">Solids in four dimensions. What you see
+    is the three-dimensional "cross section" taken at a given w value along the fourth axis. The cut can move along w, and solids fall from above.
+  </p>
+  <p class="keys"><b>click</b>   drop a solid
+<b>drag</b>    turn the camera
+<b>wheel</b>   come near, or go away
+<b>w / s</b>   move the cut along w</p>
+</div>
+
+<div id="panel">
+  <button id="reset">Reset</button>
+</div>
+
+<div id="stat"></div>
+<div id="fallback">This page needs WebGL and three.js. The browser did not load them.</div>
+
+<!-- Load three.js, then load the one file of the plugin. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="physin.js"></script>
+
+<script>
+if (typeof THREE === 'undefined' || typeof PhysiN === 'undefined') {
+  document.getElementById('fallback').style.display = 'grid';
+  document.getElementById('panel').style.display = 'none';
+} else {
+/* PhysiN — the drop of 4D solids on a floor.
+   It needs a global THREE (r128 or later) and a global PhysiN. */
+(function () {
+  'use strict';
+
+  // A browser does not permit a worker from the disk. Thus this page uses the
+  // main thread for a "file:" address, and the worker if a server gives the
+  // page. Set this before you build the scene: the scene reads it one time.
+  PhysiN.scripts.worker = location.protocol === 'file:' ? null : 'physin_worker.js';
+
+  var PAPER = '#EDEFEA';
+  var W_MIN = -3, W_MAX = 3;         // the limits of the cut
+  var W_SPEED = 1.1;                 // the speed of the cut, in units each second
+  var W_DROP = 1.5;                  // the solids fall in the band -W_DROP to W_DROP
+  var DROP_HEIGHT = 5;
+  var MAX_SOLIDS = 90;               // more solids than this makes the frame slow
+  var lastDrop = 0;                  // the time of the last drop, in ms
+
+  // ---- the renderer and the camera ---------------------------------------
+  var renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.getElementById('stage').appendChild(renderer.domElement);
+
+  var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 200);
+
+  // three.js r125 to r143 uses the name BoxBufferGeometry. Accept the two
+  // names. Only the floor needs a geometry: the plugin builds the geometry of
+  // each 4D body at each frame, from the cut.
+  var BoxG = THREE.BoxGeometry || THREE.BoxBufferGeometry;
+
+  // ---- a small orbit control, because the page loads no addon ------------
+  // The target is the point at which each solid falls. Thus the camera always
+  // turns around the pile.
+  var HOME = { theta: 0.72, phi: 0.95, dist: 13 };
+  var orbit = {
+    theta: HOME.theta, phi: HOME.phi, dist: HOME.dist,
+    target: new THREE.Vector3(0, 1.2, 0)
+  };
+  function placeCamera() {
+    var sp = Math.sin(orbit.phi);
+    camera.position.set(
+      orbit.target.x + orbit.dist * sp * Math.sin(orbit.theta),
+      orbit.target.y + orbit.dist * Math.cos(orbit.phi),
+      orbit.target.z + orbit.dist * sp * Math.cos(orbit.theta)
+    );
+    camera.lookAt(orbit.target);
+  }
+
+  // The same pointer does the two operations. A press that moves turns the
+  // camera. A press that stays at its place, and that is short, drops a solid.
+  var canvas = renderer.domElement;
+  var drag = null;
+  canvas.addEventListener('pointerdown', function (e) {
+    drag = { x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    orbit.theta -= (e.clientX - drag.x) * 0.008;
+    orbit.phi = Math.min(1.52, Math.max(0.12, orbit.phi - (e.clientY - drag.y) * 0.008));
+    drag.x = e.clientX; drag.y = e.clientY;
+    placeCamera();
+  });
+  canvas.addEventListener('pointerup', function () {
+    if (drag && !drag.moved) {
+      // A click that comes very soon after the last one drops nothing. Many
+      // solids in one place at one time make a splash, and not a pile.
+      var now = performance.now();
+      if (now - drag.t < 250 && now - lastDrop > 120) {
+        lastDrop = now;
+        drop();
+      }
+    }
+    drag = null;
+  });
+  canvas.addEventListener('pointercancel', function () { drag = null; });
+  canvas.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    orbit.dist = Math.min(34, Math.max(5, orbit.dist * (1 + e.deltaY * 0.0012)));
+    placeCamera();
+  }, { passive: false });
+
+  // ---- the materials ------------------------------------------------------
+  // The friction and the restitution go on the material.
+  function mat(color, extra) {
+    var o = { color: color, roughness: 0.5, metalness: 0.0 };
+    if (extra) for (var kx in extra) o[kx] = extra[kx];
+    var m = new THREE.MeshStandardMaterial(o);
+    m._physiN = { friction: 0.7, restitution: 0.05 };
+    return m;
+  }
+  var matCube = mat('#2C6B6B', { flatShading: true, side: THREE.DoubleSide });
+  var matBall = mat('#7A1F3D');
+  var matFloor = mat('#D9DED7', { roughness: 0.95 });
+  // The walls let the light through, thus they do not hide the pile.
+  var matWall = mat('#8FA39B', { transparent: true, opacity: 0.22, depthWrite: false });
+
+  // ---- the scene ----------------------------------------------------------
+  // The gravity has no w part. Thus a solid keeps the w that it starts with,
+  // and it stays in its own part of the fourth axis while it falls.
+  var scene = new PhysiN.Scene({
+    dimensions: 4,
+    gravity: [0, -9.81, 0, 0],
+    params: { iterations: 12 },
+    sliceW: 0
+  });
+  scene.background = new THREE.Color(PAPER);
+  scene.fog = new THREE.Fog(PAPER, 20, 52);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x9aa79f, 0.85));
+  var sun = new THREE.DirectionalLight(0xfff6e8, 0.95);
+  sun.position.set(6, 13, 5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  // The default limits of the shadow camera are +/-5. The floor is 26 wide.
+  sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
+  sun.shadow.camera.top = 14; sun.shadow.camera.bottom = -14;
+  if (sun.shadow.camera.updateProjectionMatrix) sun.shadow.camera.updateProjectionMatrix();
+  scene.add(sun);
+
+  // The floor is a half space, the shape that meets each other shape. The cut
+  // does not write the position of a half space. Thus the offset of the
+  // display slab can stay in floor.position.y, and the top face is at y = 0.
+  var floor = new PhysiN.HyperPlaneMesh([0, 1, 0, 0], 0, matFloor, new BoxG(26, 0.2, 26));
+  floor.position.y = -0.1;
+  floor.castShadow = false;
+  scene.add(floor);
+
+  var grid = new THREE.GridHelper(26, 26, 0xb4beb6, 0xd3dad3);
+  grid.position.y = 0.002;
+  scene.add(grid);       // a plain three.js object. It has no physics.
+
+  // A pen of four walls, thus the solids make a pile and do not go away. Each
+  // wall is a static tesseract: the mass 0 makes a body static. The half
+  // extent on w is 4, more than the limits of the cut. Thus a wall is in the
+  // cut at each value of w, and the pen does not go away when the cut moves.
+  var PEN = 3.8, WALL_H = 1.1, WALL_T = 0.4;
+  var walls = [
+    [[WALL_T, WALL_H, PEN, 4], [-PEN, WALL_H, 0, 0]],
+    [[WALL_T, WALL_H, PEN, 4], [PEN, WALL_H, 0, 0]],
+    [[PEN, WALL_H, WALL_T, 4], [0, WALL_H, -PEN, 0]],
+    [[PEN, WALL_H, WALL_T, 4], [0, WALL_H, PEN, 0]]
+  ];
+  for (var wi = 0; wi < walls.length; wi += 1) {
+    var wall = new PhysiN.HyperBoxMesh(walls[wi][0], matWall, 0);
+    wall.setPositionN(walls[wi][1]);
+    wall.castShadow = false;
+    wall.receiveShadow = false;
+    scene.add(wall);
+  }
+
+  // ---- the solids ---------------------------------------------------------
+  // A tesseract and a hypersphere only. The collision of a box with a box, of
+  // a box with a ball, of a ball with a ball, and of the two with a half space
+  // is there. A torus or a convex body does not touch a box, thus a pile of
+  // those bodies is not correct.
+  var solids = [];
+  var sliceW = 0;
+
+  function rnd(a) { return (Math.random() - 0.5) * a; }
+
+  /**
+   * A place for a new solid that holds no other solid. A body that starts
+   * inside an other body gets a large impulse from the solver, and it then
+   * flies out of the pen. The x, the z and the w are random; the height goes
+   * up until the place is free.
+   */
+  function freeSpot() {
+    var c = [rnd(1.6), DROP_HEIGHT, rnd(1.6), rnd(2 * W_DROP)];
+    for (var t = 0; t < 24; t += 1) {
+      var near = false;
+      for (var i = 0; i < solids.length; i += 1) {
+        var p = solids[i].getPositionN();
+        var dx = c[0] - p[0], dy = c[1] - p[1], dz = c[2] - p[2], dw = c[3] - p[3];
+        if (dx * dx + dy * dy + dz * dz + dw * dw < 1.8 * 1.8) { near = true; break; }
+      }
+      if (!near) break;
+      c[1] += 0.6;
+    }
+    return c;
+  }
+
+  function drop() {
+    if (solids.length >= MAX_SOLIDS) {
+      scene.remove(solids.shift());    // this also takes the body out of the engine
+    }
+    var m;
+    if (Math.random() < 0.5) {
+      var h = 0.34 + Math.random() * 0.2;
+      m = new PhysiN.HyperBoxMesh([h, h, h, h], matCube, 1);
+    } else {
+      m = new PhysiN.HyperSphereMesh(0.34 + Math.random() * 0.18, matBall, 1, 20);
+    }
+    // setPositionN and rotateInPlane write into the mesh. Thus you can call
+    // them before scene.add. A velocity or a force is a command to the engine,
+    // and the mesh sends it through its parent. Thus it must come after.
+    // Bivector order, n = 4: xy xz xw yz yw zw. The two turns below are in the
+    // (x y) plane and in the (x w) plane.
+    m.setPositionN(freeSpot());
+    m.rotateInPlane(0, 1, Math.random() * Math.PI);
+    m.rotateInPlane(0, 3, Math.random() * Math.PI);
+    // The damping stops a ball that rolls. A half space has no limit, and it
+    // has no friction of a roll. Thus a ball with no damping rolls for ever.
+    m._physiN.linearDamping = 0.22;
+    m._physiN.angularDamping = 0.35;
+    scene.add(m);
+    // The gravity does not move a body along w, but a contact does: two solids
+    // that touch at a different w push each other along w. Nothing brings them
+    // back, thus the pile goes away along the fourth axis. This joint holds the
+    // body at the w that it starts with. Each solid then falls in its own 3D
+    // layer, and the keys w and s choose the layer that you see.
+    scene.addConstraint(new PhysiN.SubspaceJoint(m, null, {
+      lockAxes: [3],       // the position on w only. The turns stay free.
+      worldFrame: true     // the direction w of the world, and not of the body
+    }));
+    solids.push(m);
+  }
+
+  // ---- the cut, with the w key and the s key ------------------------------
+  // scene.sliceW holds the value of the cut, and it holds for each body. There
+  // is no cut for one body. The keys only say which way the cut moves, and the
+  // frame moves it. Thus the speed does not change with the repeat rate of the
+  // keyboard.
+  var keyUp = false, keyDown = false;
+  window.addEventListener('keydown', function (e) {
+    var k = e.key.toLowerCase();
+    if (k === 'w') keyUp = true;
+    else if (k === 's') keyDown = true;
+    else return;
+    e.preventDefault();
+  });
+  window.addEventListener('keyup', function (e) {
+    var k = e.key.toLowerCase();
+    if (k === 'w') keyUp = false;
+    else if (k === 's') keyDown = false;
+  });
+  window.addEventListener('blur', function () { keyUp = false; keyDown = false; });
+
+  // ---- the reset ----------------------------------------------------------
+  // The scene stays. The button takes each solid out, and it puts the view
+  // back at its first place.
+  document.getElementById('reset').addEventListener('click', function () {
+    for (var i = 0; i < solids.length; i += 1) scene.remove(solids[i]);
+    solids.length = 0;
+    sliceW = 0;
+    scene.sliceW = 0;
+    orbit.theta = HOME.theta; orbit.phi = HOME.phi; orbit.dist = HOME.dist;
+    placeCamera();
+    scene.refreshSlice();
+    this.blur();          // thus the space bar does not press the button again
+  });
+
+  // ---- the frame ----------------------------------------------------------
+  var stat = document.getElementById('stat');
+  var last = 0;
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    var dt = last ? Math.min((now - last) / 1000, 0.05) : 0;
+    last = now;
+
+    if (keyUp !== keyDown) {
+      var step = (keyUp ? W_SPEED : -W_SPEED) * dt;
+      sliceW = Math.min(W_MAX, Math.max(W_MIN, sliceW + step));
+    }
+    scene.sliceW = sliceW;
+    scene.simulate(1 / 60, 2);
+    renderer.render(scene, camera);
+
+    stat.innerHTML = 'cut at w = <b>' + (sliceW >= 0 ? '+' : '') + sliceW.toFixed(2)
+      + '</b>\nsolids: ' + solids.length;
+  }
+
+  // ---- the size of the window ---------------------------------------------
+  function resize() {
+    var w = window.innerWidth, h = window.innerHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h, false);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  placeCamera();
+
+  // Three solids at the start, thus the page is not empty.
+  drop(); drop(); drop();
+  requestAnimationFrame(frame);
+})();
+}
+</script>
+</body>
+</html>
