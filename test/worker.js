@@ -190,6 +190,31 @@ section('the two bundles hold the same engine', () => {
     missing.length === 0, missing.join(', '));
   check('every shared engine module is the same in the two bundles',
     differ.length === 0, differ.length ? `these differ: ${differ.join(', ')}` : `${shared.length} modules`);
+
+  // A command that comes two times in the table is silent: JavaScript keeps the
+  // LAST property of an object literal, thus the second copy hides the first,
+  // and `node --check` gives no error. A stale copy of `setConstraintParams`
+  // was in the two bundles, and it threw the new anchors of a joint away.
+  /** The text of the command table of `createEngine()`. */
+  const commandTable = (code) => {
+    const i = code.indexOf('const commands = {');
+    return code.slice(i, code.indexOf('\n    };\n', i));
+  };
+  /** The names that come more than one time in the command table. */
+  const repeatedCommands = (code) => {
+    const count = new Map();
+    // The end `) {` is necessary: it keeps a CALL such as `post(...);` out.
+    for (const m of commandTable(code).matchAll(/^ {6}([A-Za-z_$][\w$]*)\([^()]*\) \{$/gm)) {
+      count.set(m[1], (count.get(m[1]) || 0) + 1);
+    }
+    return [...count].filter(([, c]) => c > 1).map(([name, c]) => `${name} x${c}`);
+  };
+
+  for (const [name, code] of [['physin.js', mainCode], ['physin_worker.js', workerCode]]) {
+    const dup = repeatedCommands(code);
+    check(`no command of ${name} hides another of the same name`,
+      dup.length === 0, dup.length ? `these come more than one time: ${dup.join(', ')}` : 'each name is unique');
+  }
 });
 
 // ---- 5. a joint through the worker

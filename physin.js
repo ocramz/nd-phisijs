@@ -5990,34 +5990,6 @@
         j.a.wake();
         j.b.wake();
       },
-      /** Changes `enabled`, `collideConnected`, `rest` or `mode` of a joint. */
-      setConstraintParams(params) {
-        const j = constraints.get(params.id);
-        if (!j) return;
-        if (params.enabled !== void 0) {
-          if (params.enabled && !j.enabled) resetConstraint(j);
-          j.enabled = params.enabled;
-        }
-        if (params.rest !== void 0) j.rest = params.rest;
-        if (params.mode !== void 0) j.mode = params.mode;
-        if (params.lowerAngle !== void 0) j.lowerAngle = params.lowerAngle;
-        if (params.upperAngle !== void 0) j.upperAngle = params.upperAngle;
-        if (params.lowerAngle !== void 0 || params.upperAngle !== void 0) {
-          j.hasLimit = j.lowerAngle > -Infinity || j.upperAngle < Infinity;
-        }
-        if (params.motorSpeed !== void 0) j.motorSpeed = params.motorSpeed;
-        if (params.maxMotorTorque !== void 0) j.maxMotorTorque = params.maxMotorTorque;
-        if (params.hertz !== void 0) j.hertz = params.hertz;
-        if (params.damping !== void 0) j.damping = params.damping;
-        if (params.breakForce !== void 0) j.breakForce = params.breakForce;
-        if (params.breakTorque !== void 0) j.breakTorque = params.breakTorque;
-        if (params.collideConnected !== void 0) {
-          j.collideConnected = params.collideConnected;
-          world._rebuildNoCollide();
-        }
-        j.a.wake();
-        j.b.wake();
-      },
       updateTransform(params) {
         const b = bodies.get(params.id);
         if (!b) return;
